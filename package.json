@@ -1,5 +1,5 @@
 {
-  "name": "@kenbanks/pi-ui",
+  "name": "@npm-ken/pi-codemode-ui",
   "version": "0.1.0",
   "description": "Display-only compact codemode rendering for Pi",
   "type": "module",
