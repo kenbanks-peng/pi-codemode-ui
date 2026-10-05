@@ -807,3 +807,47 @@ test("unrecorded default tool calls remain unknown or pending, not successful", 
     assert.ok(!screen.includes("✓"));
   }
 });
+
+test("unmatched long shell calls keep duration on the command row", () => {
+  for (const name of ["bash", "powershell"]) {
+    const command = "printf " + "界".repeat(200);
+    const component = renderer().renderResult!(
+      { content: [], details: { calls: [
+        { name, args: { command }, status: "ok", durationMs: 25 },
+      ] } } as never, { expanded: false, isPartial: false }, theme(),
+      context({ args: { code: "text(value);" } }),
+    );
+    for (const width of [32, 72, 120]) {
+      const lines = component.render(width);
+      const commandRow = plain(lines).split("\n").find(line => line.includes(name + " "))!;
+      assert.match(commandRow, /…\s+25ms/);
+      assert.equal(plain(lines).split("\n").filter(line => line.includes("25ms")).length, 1);
+      assert.ok(lines.every(line => visibleWidth(line) <= width));
+    }
+  }
+});
+
+test("parallel shell batches show headings and each recorded duration once", () => {
+  const commands = ["printf '\\n=== Repository summary ===\\n'; " + "pwd; ".repeat(40),
+    "printf '\\n=== Source file sizes ===\\n'; " + "wc -l src/index.ts; ".repeat(40)];
+  const code = "const commands = " + JSON.stringify(commands) + ";\n" +
+    "await Promise.all(commands.map(async (command, index) => { " +
+    "const result = await tools.bash({command, timeout: 20}); text({command: index + 1, ...result}); }));";
+  const component = (expanded: boolean) => renderer().renderResult!(
+    {content: [], details: {calls: commands.map((command, index) => ({
+      name: "bash", args: {command}, status: "ok", durationMs: 25 + index,
+    }))}} as never, {expanded, isPartial: false}, theme(), context({args: {code}, expanded}),
+  );
+  for (const width of [48, 72, 120]) {
+    const lines = component(false).render(width);
+    const screen = plain(lines);
+    assert.match(screen, /commands ← \[2 shell commands\]/);
+    assert.match(screen, /parallel commands.map\(command, index\)/);
+    assert.match(screen, /✓\s+bash · Repository summary\s+25ms/);
+    assert.match(screen, /✓\s+bash · Source file sizes\s+26ms/);
+    assert.equal(screen.split("\n").filter(line => line.includes("bash ")).length, 2);
+    assert.doesNotMatch(screen, /printf|Promise|timeout/);
+    assert.ok(lines.every(line => visibleWidth(line) <= width));
+  }
+  for (const command of commands) assert.ok(plain(component(true).render(4000)).includes(command));
+});

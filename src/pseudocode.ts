@@ -321,10 +321,99 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
       allowAwaitOutsideFunction: true,
       allowReturnOutsideFunction: true,
     }) as unknown as Program;
+    // Only compress an adjacent, immutable literal array and a simple shell
+    // mapper. Dynamic arrays and callbacks with extra work keep the full layout.
+    const batches = new Map<Node, { binding: string; commands: string[];
+      tool: string; params: string[]; output: Node }>();
+    const batchDeclarations = new Map<Node, number>();
+    for (let i = 1; i < program.body.length; i++) {
+      const declaration = program.body[i - 1];
+      const statement = program.body[i];
+      if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const" ||
+          declaration.declarations.length !== 1 || statement?.type !== "ExpressionStatement") continue;
+      const entry = declaration.declarations[0]!;
+      if (entry.id.type !== "Identifier" || entry.init?.type !== "ArrayExpression" ||
+          !entry.init.elements.length) continue;
+      const commands = entry.init.elements.map(element =>
+        element?.type === "Literal" && typeof element.value === "string" ? element.value
+          : element?.type === "TemplateLiteral" && !element.expressions.length
+            ? element.quasis.map(part => part.value.cooked ?? part.value.raw).join("") : undefined);
+      if (!commands.every((command): command is string => command !== undefined)) continue;
+      const expression = statement.expression.type === "AwaitExpression"
+        ? statement.expression.argument : statement.expression;
+      if (expression.type !== "CallExpression" || expression.optional ||
+          expression.callee.type !== "MemberExpression" || expression.callee.computed ||
+          expression.callee.optional || expression.callee.object.type !== "Identifier" ||
+          expression.callee.object.name !== "Promise" || expression.callee.property.type !== "Identifier" ||
+          expression.callee.property.name !== "all" || expression.arguments.length !== 1) continue;
+      const mapper = expression.arguments[0];
+      if (mapper?.type !== "CallExpression" || mapper.optional ||
+          mapper.callee.type !== "MemberExpression" || mapper.callee.computed || mapper.callee.optional ||
+          mapper.callee.object.type !== "Identifier" || mapper.callee.object.name !== entry.id.name ||
+          mapper.callee.property.type !== "Identifier" || mapper.callee.property.name !== "map" ||
+          mapper.arguments.length !== 1) continue;
+      const callback = mapper.arguments[0];
+      if (callback?.type !== "ArrowFunctionExpression" || !callback.async ||
+          !callback.params.length || callback.params.length > 2 ||
+          !callback.params.every(param => param.type === "Identifier") ||
+          callback.body.type !== "BlockStatement" || callback.body.body.length !== 2) continue;
+      const [result, output] = callback.body.body;
+      if (result?.type !== "VariableDeclaration" || result.declarations.length !== 1 ||
+          result.declarations[0]?.id.type !== "Identifier" ||
+          result.declarations[0].init?.type !== "AwaitExpression" ||
+          output?.type !== "ExpressionStatement" || output.expression.type !== "CallExpression" ||
+          output.expression.callee.type !== "Identifier" || output.expression.callee.name !== "text") continue;
+      const call = result.declarations[0].init.argument;
+      if (call.type !== "CallExpression" || call.optional ||
+          call.callee.type !== "MemberExpression" || call.callee.optional || call.callee.computed ||
+          call.callee.object.type !== "Identifier" || call.callee.object.name !== "tools" ||
+          call.callee.property.type !== "Identifier" ||
+          !["bash", "powershell"].includes(call.callee.property.name) ||
+          call.arguments.length !== 1 || call.arguments[0]?.type !== "ObjectExpression") continue;
+      const properties = call.arguments[0].properties;
+      const keys = properties.map(property => property.type === "Property" &&
+        !property.computed && !property.method && property.kind === "init" &&
+        property.key.type === "Identifier" ? property.key.name : undefined);
+      if (keys.some(key => key === undefined || !["command", "timeout"].includes(key)) ||
+          new Set(keys).size !== keys.length) continue;
+      const command = properties[keys.indexOf("command")];
+      if (command?.type !== "Property" || command.value.type !== "Identifier" ||
+          command.value.name !== callback.params[0]!.name) continue;
+      // Options and output must not contain hidden calls or other side effects.
+      const timeout = properties[keys.indexOf("timeout")];
+      if (timeout && (timeout.type !== "Property" || timeout.value.type !== "Literal")) continue;
+      const pureOutput = (node: Node): boolean => {
+        switch (node.type) {
+          case "Identifier": case "Literal": return true;
+          case "ObjectExpression": return node.properties.every(pureOutput);
+          case "Property": return !node.computed && !node.method && node.kind === "init" &&
+            pureOutput(node.key) && pureOutput(node.value);
+          case "SpreadElement": return pureOutput(node.argument);
+          case "BinaryExpression": return pureOutput(node.left) && pureOutput(node.right);
+          default: return false;
+        }
+      };
+      if (!output.expression.arguments.every(pureOutput)) continue;
+      batches.set(statement.expression, { binding: entry.id.name, commands,
+        tool: call.callee.property.name, params: callback.params.map(param => param.name), output });
+      batchDeclarations.set(entry, commands.length);
+    }
     let budget = 2000;
     const describe = (node: Node, depth = 0, available = width): string => {
       if (--budget < 0 || depth > 24) throw new Error("Summary limit");
       const child = (value: Node) => describe(value, depth + 1, available);
+      const batch = batches.get(node);
+      if (batch) {
+        const rows = batch.commands.map(command => {
+          // Use only an explicit leading printf banner as a label.
+          const heading = command.match(/^\s*printf\s+['"](?:\\n|\s)*===\s+([^\r\n]+?)\s+===(?:\\n|\s)*['"]/);
+          const label = heading?.[1]?.trim();
+          return "  " + mark(batch.tool, true, command) +
+            (label ? " · " + label : " " + command.replace(/\s+/g, " ").trim());
+        });
+        return "parallel " + batch.binding + ".map(" + batch.params.join(", ") + ")\n" +
+          rows.join("\n") + "\n  output " + child(batch.output);
+      }
       const list = (values: Node[]) => values.map(child).join(", ");
       // Tool markers carry identity, not display width. Both render passes must
       // choose the same layout so call positions follow the visible text.
@@ -417,6 +506,8 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
           ).filter(Boolean).join("\n");
         case "VariableDeclarator": {
           const binding = child(node.id);
+          const count = batchDeclarations.get(node);
+          if (count !== undefined) return binding + " ← [" + count + " shell commands]";
           return node.init
             ? binding + " ← " + describe(node.init, depth + 1,
                 available - visibleWidth(binding + " ← "))

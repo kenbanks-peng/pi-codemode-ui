@@ -754,10 +754,20 @@ export class Screen implements Component {
           row(left + " ".repeat(w - visibleWidth(left) - duration.length) + fg("muted", duration), "toolOutput", true);
         else {
           const shell = /^(?:bash|powershell)$/i.test(call.name);
-          for (const part of preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
-            left, shell ? 1 : 3))
-            row(part, "toolOutput", true);
-          if (duration) row(" ".repeat(Math.max(0, w - duration.length)) + fg("muted", duration), "toolOutput", true);
+          const parts = preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
+            left, shell ? 1 : 3);
+          parts.forEach((part, index) => {
+            if (duration && index === parts.length - 1 &&
+                visibleWidth(part) + visibleWidth(duration) + 2 <= w)
+              row(part + " ".repeat(w - visibleWidth(part) - visibleWidth(duration)) +
+                fg("muted", duration), "toolOutput", true);
+            else {
+              row(part, "toolOutput", true);
+              if (duration && index === parts.length - 1)
+                row(" ".repeat(Math.max(0, w - visibleWidth(duration))) +
+                  fg("muted", duration), "toolOutput", true);
+            }
+          });
         }
         if (call.status === "cancelled") row("cancelled", "warning");
         if (call.cost !== undefined) row("Cost: $" + call.cost, "muted");
