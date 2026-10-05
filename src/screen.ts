@@ -672,6 +672,13 @@ export class Screen implements Component {
           return fg(color, displayName);
         },
       );
+      const commandRow = (text: string, color?: ThemeColor) => {
+        if (color === "error") {
+          const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
+          row(fg("error", plain + " ".repeat(Math.max(0, w - visibleWidth(plain)))),
+            "toolOutput", true);
+        } else row(text, "toolOutput", true);
+      };
       const fileCommand = (
         command: string, duration: string, color: ThemeColor,
         timeColor: ThemeColor, call?: Call,
@@ -693,19 +700,30 @@ export class Screen implements Component {
               original = "… (path truncated)";
             } else return false;
           }
-          const parts = preview(w, left + safeText(original), Infinity);
-          parts.forEach((part, index) => {
-            const last = index === parts.length - 1;
-            if (last && duration && visibleWidth(part) + duration.length + 2 <= w)
-              row(fg(color, part) + " ".repeat(w - visibleWidth(part) - duration.length) +
-                fg(timeColor, duration), "toolOutput", true);
-            else {
-              row(part, color);
-              if (last && duration)
-                row(" ".repeat(Math.max(0, w - duration.length)) + fg(timeColor, duration),
-                  "toolOutput", true);
-            }
-          });
+          const available = Math.max(0, w - visibleWidth(left) -
+            (duration ? visibleWidth(duration) + 2 : 0));
+          const separator = original.includes("/") ? "/" : "\\";
+          const segments = safeText(original).split(separator);
+          let target = segments.length > 3
+            ? "…" + separator + segments.slice(-3).join(separator) : segments.join(separator);
+          while (visibleWidth(target) > available && segments.length > 1) {
+            segments.shift();
+            target = "…" + separator + segments.join(separator);
+          }
+          if (visibleWidth(target) > available) {
+            const tail = Array.from(segments[0] ?? target);
+            while (tail.length && visibleWidth("…" + tail.join("")) > available) tail.shift();
+            target = available ? "…" + tail.join("") : "";
+          }
+          const fitted = truncateToWidth(left + target, w, "")
+            .replace(/\x1b\[[0-9;]*m/g, "");
+          const gap = duration ? Math.max(0, w - visibleWidth(fitted) - visibleWidth(duration)) : 0;
+          const nameStart = left.match(/^[✓✗…–?] /)?.[0].length ?? 0;
+          const nameEnd = left.trimEnd().length;
+          const styledCommand = color === "error" ? fg(color, fitted)
+            : fg(color, fitted.slice(0, nameStart)) +
+              fg(color, fitted.slice(nameStart, nameEnd)) + fitted.slice(nameEnd);
+          commandRow(styledCommand + " ".repeat(gap) + fg(timeColor, duration), color);
           if (call?.status === "cancelled") row("cancelled", "warning");
           if (call?.cost !== undefined) row("Cost: $" + call.cost, "muted");
           return true;
@@ -728,11 +746,11 @@ export class Screen implements Component {
           command, shell ? 1 : annotation ? 3 : Infinity);
         parts.forEach((part, i) => {
           if (duration && i === parts.length - 1 && visibleWidth(part) + duration.length + 2 <= w)
-            row(part + " ".repeat(w - visibleWidth(part) - duration.length) + fg(timeColor, duration), "toolOutput", true);
+            commandRow(part + " ".repeat(w - visibleWidth(part) - duration.length) + fg(timeColor, duration), annotation?.color);
           else {
-            row(part, "toolOutput", true);
+            commandRow(part, annotation?.color);
             if (duration && i === parts.length - 1)
-              row(" ".repeat(Math.max(0, w - duration.length)) + fg(timeColor, duration), "toolOutput", true);
+              commandRow(" ".repeat(Math.max(0, w - duration.length)) + fg(timeColor, duration), annotation?.color);
           }
         });
         if (call?.status === "cancelled") row("cancelled", "warning");
@@ -751,7 +769,7 @@ export class Screen implements Component {
         if (fileCommand(command + target, duration, color, "muted", call)) continue;
         const left = color === "error" ? fg(color, command + target) : fg(color, command) + target;
         if (visibleWidth(left) + duration.length + 2 <= w)
-          row(left + " ".repeat(w - visibleWidth(left) - duration.length) + fg("muted", duration), "toolOutput", true);
+          commandRow(left + " ".repeat(w - visibleWidth(left) - duration.length) + fg("muted", duration), color);
         else {
           const shell = /^(?:bash|powershell)$/i.test(call.name);
           const parts = preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
@@ -759,13 +777,13 @@ export class Screen implements Component {
           parts.forEach((part, index) => {
             if (duration && index === parts.length - 1 &&
                 visibleWidth(part) + visibleWidth(duration) + 2 <= w)
-              row(part + " ".repeat(w - visibleWidth(part) - visibleWidth(duration)) +
-                fg("muted", duration), "toolOutput", true);
+              commandRow(part + " ".repeat(w - visibleWidth(part) - visibleWidth(duration)) +
+                fg("muted", duration), color);
             else {
-              row(part, "toolOutput", true);
+              commandRow(part, color);
               if (duration && index === parts.length - 1)
-                row(" ".repeat(Math.max(0, w - visibleWidth(duration))) +
-                  fg("muted", duration), "toolOutput", true);
+                commandRow(" ".repeat(Math.max(0, w - visibleWidth(duration))) +
+                  fg("muted", duration), color);
             }
           });
         }

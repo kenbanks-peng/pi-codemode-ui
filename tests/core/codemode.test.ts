@@ -242,7 +242,7 @@ test("large single lines stay out of compact view and retain exact expansion", (
   assert.ok(plain(shell, 30000).includes(raw));
 });
 
-test("truncated discovery keeps recovery path but no compact tool list", () => {
+test("truncated discovery hides recovery path in compact view and keeps expanded raw output", () => {
   const shell = host('text(await searchTools("tools"));');
   const entry = JSON.stringify({ name: "find", description: "Find files.\n\ncodemode tool declaration:\n" + "x".repeat(1500) });
   const raw = "Warning: truncated output (original token count: 11579)\nTotal output lines: 1\n\n[" +
@@ -253,7 +253,7 @@ test("truncated discovery keeps recovery path but no compact tool list", () => {
   assert.match(screen, /output/);
   assert.doesNotMatch(screen, /Tool search|Partial tool list|find\s+Find files/);
   assert.doesNotMatch(screen, /codemode tool declaration/);
-  assert.match(screen, /\/tmp\/full.txt/);
+  assert.doesNotMatch(screen, /\/tmp\/full\.txt|Warning: truncated output|Full output:/);
   shell.setExpanded(true);
   const expanded = plain(shell, 20000);
   for (const line of raw.split("\n")) assert.ok(expanded.includes(line));

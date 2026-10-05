@@ -178,7 +178,7 @@ test("pseudocode shows text arguments without the output wrapper", () => {
         context({ args: { code } }),
       ).render(100),
     );
-    assert.match(screen, code.startsWith("try") ? /READ\(\{path: "file"\}\)/ : /READ file/);
+    assert.match(screen, /\bread file\b/);
     assert.doesNotMatch(screen, /text\(/);
     const expanded = plain(
       renderer().renderResult!(
@@ -192,20 +192,27 @@ test("pseudocode shows text arguments without the output wrapper", () => {
   }
 });
 
-test("pseudocode omits const bindings and text variables but keeps calls", () => {
-  for (const prefix of ["", "try {} catch (error) {}\n", "/* large */".repeat(5000)]) {
-  const code = prefix + 'const matches = await searchTools("read");\ntext(matches);\ntext(searchTools("edit"));';
-  const screen = plain(
-    renderer().renderResult!(
-      { content: [], details: {} } as never,
-      { expanded: false, isPartial: false },
-      theme(),
-      context({ args: { code } }),
-    ).render(100),
-  );
-  assert.match(screen, /searchTools\("read"\)/);
-  assert.match(screen, /searchTools\("edit"\)/);
-  assert.doesNotMatch(screen, /matches|text\(/);
+test("pseudocode keeps helper calls and hides text wrappers in parsed and fallback layouts", () => {
+  for (const prefix of ["", "try {} catch (error) {}\n", "/* large */".repeat(5000) + "\n"]) {
+    const code = prefix + 'const matches = await searchTools("read");\ntext(matches);\ntext(searchTools("edit"));';
+    const screen = plain(
+      renderer().renderResult!(
+        { content: [], details: {} } as never,
+        { expanded: false, isPartial: false },
+        theme(),
+        context({ args: { code } }),
+      ).render(100),
+    );
+    if (prefix.length > 50000) {
+      assert.match(screen, /searchTools\("read"\)/);
+      assert.match(screen, /searchTools\("edit"\)/);
+      assert.doesNotMatch(screen, /\bmatches\b/);
+    } else {
+      assert.match(screen, /matches ← searchTools read/);
+      assert.match(screen, /searchTools edit/);
+      assert.equal((screen.match(/\bmatches\b/g) ?? []).length, 1);
+    }
+    assert.doesNotMatch(screen, /\bconst\b|text\(/);
   }
 });
 
@@ -225,8 +232,8 @@ test("pseudocode keeps codemode helpers visible inside text wrappers", () => {
   }
 });
 
-test("pseudocode uses uppercase primary tool names without changing other names or strings", () => {
-  for (const prefix of ["", "try {", "/* large */".repeat(5000)]) {
+test("pseudocode uses compact lowercase tool names without changing other names or target text", () => {
+  for (const prefix of ["", "try {", "/* large */".repeat(5000) + "\n"]) {
     const code = prefix +
       'text(await tools.read({path: "tools.read"}));\n' +
       'await tools.edit({path: "file"});\nawait tools.bash({command: "pwd"});\n' +
@@ -239,9 +246,12 @@ test("pseudocode uses uppercase primary tool names without changing other names 
       theme(),
       context({ args: { code } }),
     ).render(100));
-    for (const name of ["READ", "EDIT", "BASH", "WRITE", "GREP", "FIND", "LS", "POWERSHELL"])
-      assert.ok(screen.includes(prefix === "" && name === "BASH" ? "BASH pwd" : prefix === "" && name === "READ" ? "READ tools.read" : name + "("), name);
-    assert.match(screen, prefix === "" ? /READ tools\.read/ : /"tools\.read"/);
+    assert.match(screen, /\bread tools\.read\b/);
+    assert.match(screen, /\bedit file\b/);
+    assert.match(screen, /\bbash pwd\b/);
+    for (const name of ["write", "grep", "find", "ls", "powershell"])
+      assert.match(screen, new RegExp("\\b" + name + "\\b"), name);
+    assert.doesNotMatch(screen, /\b(?:READ|EDIT|BASH|WRITE|GREP|FIND|LS|POWERSHELL)\b/);
     assert.match(screen, /custom/);
     assert.doesNotMatch(screen, /tools\.custom/);
     assert.match(screen, /other\.read\(\)/);
@@ -256,11 +266,11 @@ test("pseudocode primary tool names use theme syntaxFunction", () => {
     currentTheme,
     context({ args: { code: 'await tools.read({path: "file"}); await tools.edit({});' } }),
   ).render(100);
-  assert.ok(lines.join("\n").includes(currentTheme.fg("syntaxFunction", "READ")));
-  assert.ok(lines.join("\n").includes(currentTheme.fg("syntaxFunction", "EDIT")));
+  assert.ok(lines.join("\n").includes(currentTheme.fg("syntaxFunction", "read")));
+  assert.ok(lines.join("\n").includes(currentTheme.fg("syntaxFunction", "edit")));
 });
 
-test("pseudocode keeps multiline write content complete", () => {
+test("pseudocode hides multiline write content while expanded code keeps it complete", () => {
   const code = 'await tools.write({path: "script.mjs", content: `#!/usr/bin/env node\nimport { readFileSync } from "node:fs";\nconst hidden = 1;\nconst tail = 2;`});';
   const component = (expanded: boolean) => renderer().renderResult!(
     { content: [], details: {} } as never,
@@ -269,14 +279,13 @@ test("pseudocode keeps multiline write content complete", () => {
     context({ args: { code }, expanded }),
   );
   const screen = plain(component(false).render(200));
-  assert.match(screen, /WRITE\(/);
-  assert.match(screen, /#!\/usr\/bin\/env node/);
-  assert.match(screen, /const hidden = 1;/);
-  assert.match(screen, /const tail = 2;/);
-  assert.ok(plain(component(true).render(200)).includes("const tail = 2;"));
+  assert.match(screen, /\bwrite script\.mjs\b/);
+  assert.doesNotMatch(screen, /write\(|#!\/usr\/bin\/env node|readFileSync|const hidden|const tail/);
+  const expanded = plain(component(true).render(200));
+  for (const line of code.split("\n")) assert.ok(expanded.includes(line));
 });
 
-test("pseudocode shows only EDIT and path while expanded code keeps edits", () => {
+test("pseudocode shows only edit and path while expanded code keeps edits", () => {
   for (const edits of [
     '[{oldText: "old", newText: "new"}]',
     '[{oldText: `old first\nold hidden`, newText: `new first\nnew hidden`}]',
@@ -288,8 +297,8 @@ test("pseudocode shows only EDIT and path while expanded code keeps edits", () =
       context({ args: { code }, expanded }),
     );
     const screen = plain(component(false).render(100));
-    assert.ok(screen.includes("EDIT src/screen.ts"));
-    assert.doesNotMatch(screen, /oldText|newText|old hidden|new hidden|EDIT\(/);
+    assert.ok(screen.includes("edit src/screen.ts"));
+    assert.doesNotMatch(screen, /oldText|newText|old hidden|new hidden|edit\(/);
     const expanded = plain(component(true).render(200));
     assert.match(expanded, /oldText|newText/);
   }
@@ -305,7 +314,7 @@ test("edit confirmations become success color and remain in expanded raw output"
     context({ args: { code }, expanded }),
   );
   const lines = component(false).render(100);
-  assert.ok(lines.join("\n").includes(currentTheme.fg("success", "EDIT")));
+  assert.ok(lines.join("\n").includes(currentTheme.fg("success", "edit")));
   assert.doesNotMatch(plain(lines), /Successfully replaced|Output 1|No text output/);
   assert.ok(plain(component(true).render(200)).includes(receipt));
 });
@@ -319,7 +328,8 @@ test("failed tool calls use error color and retain error output", () => {
     { expanded: false, isPartial: false }, currentTheme,
     context({ args: { code: 'await tools.edit({path: "file.ts", edits: []});' } }),
   ).render(100);
-  assert.ok(lines.join("\n").includes(currentTheme.fg("error", "✗ EDIT file.ts")));
+  const failedRow = plain(lines).split("\n").find(line => line.includes("✗ edit file.ts"))!;
+  assert.ok(lines.join("\n").includes(currentTheme.fg("error", failedRow.slice(2, -2))));
   assert.match(plain(lines), /permission denied/);
 });
 
@@ -333,13 +343,13 @@ test("pseudocode merges per-call status and right-aligned execution times", () =
     { expanded: false, isPartial: false }, theme(),
     context({ args: { code } }),
   ).render(100));
-  assert.match(screen, /✓ EDIT first\.ts +12ms/);
-  assert.match(screen, /✗ EDIT second\.ts +8\.6s/);
+  assert.match(screen, /✓ edit first\.ts +12ms/);
+  assert.match(screen, /✗ edit second\.ts +8\.6s/);
   assert.match(screen, /denied/);
   assert.doesNotMatch(screen, /CALLS/);
 });
 
-test("pseudocode execution times match success and error colors", () => {
+test("successful durations are muted and failed command rows are error-colored", () => {
   const currentTheme = theme();
   const result = { content: [], details: { calls: [
     { name: "edit", args: '{"path":"first.ts"}', status: "ok", durationMs: 12 },
@@ -351,8 +361,10 @@ test("pseudocode execution times match success and error colors", () => {
       result as never, { expanded: false, isPartial: false }, currentTheme,
       context({ args: { code } }),
     ).render(width).join("\n");
-    assert.ok(styled.includes(currentTheme.fg("success", "12ms")));
-    assert.ok(styled.includes(currentTheme.fg("error", "8.6s")));
+    assert.ok(styled.includes(currentTheme.fg("muted", "12ms")));
+    const failedRow = stripVTControlCharacters(styled).split("\n")
+      .find(line => line.includes("8.6s"))!;
+    assert.ok(styled.includes(currentTheme.fg("error", failedRow.slice(2, -2))));
   }
 });
 
@@ -409,7 +421,7 @@ test("recovered tool errors keep success color and appear in output order", () =
   ).render(100));
   assert.doesNotMatch(screen, /Complete|Script failed|Running/);
   assert.doesNotMatch(screen, /Script failed/);
-  assert.match(screen, /✗ BASH/);
+  assert.match(screen, /✗ bash/);
   assert.ok(screen.indexOf("Pseudocode") < screen.indexOf("Error"));
   assert.doesNotMatch(screen, /before sentinel|after sentinel/);
   const expanded = plain(render(result, 1000, true));
@@ -436,9 +448,11 @@ test("failed pseudocode calls color their full command error", () => {
     { expanded: false, isPartial: false }, currentTheme,
     context({ args: { code: 'await tools.bash({command: "npm run check", timeout: 120});' } }),
   ).render(100);
-  const command = '✗ BASH npm run check · timeout 120s  ';
-  assert.ok(lines.join("\n").includes(currentTheme.fg("error",
-    command + " ".repeat(96 - command.length - 4) + "6.0s")));
+  const command = '✗ bash npm run check';
+  const failedRow = plain(lines).split("\n").find(line => line.includes(command))!;
+  assert.match(failedRow, /✗ bash npm run check +6\.0s/);
+  assert.doesNotMatch(failedRow, /timeout/);
+  assert.ok(lines.join("\n").includes(currentTheme.fg("error", failedRow.slice(2, -2))));
 });
 
 test("tool search stays hidden until output is opened or expanded", () => {
@@ -547,7 +561,7 @@ test("shell preview grows with panel width and reserves status and duration", ()
   }
 });
 
-test("file paths wrap in full and preserve expanded code", () => {
+test("file paths keep trailing segments on one row and preserve expanded code", () => {
   const path = "/Users/kenbanks/Software/ToolChain/node_modules/.pnpm/very-long-package/node_modules/pi-coding-agent/docs/codemode.md";
   for (const tool of ["read", "edit", "write", "ls"]) {
     const code = `await tools.${tool}({path: ${JSON.stringify(path)}});`;
@@ -564,17 +578,20 @@ test("file paths wrap in full and preserve expanded code", () => {
       assert.ok(lines.every((line) => visibleWidth(line) <= width));
       const body = screen.split("\n").filter(line => line.startsWith("│ "))
         .map(line => line.slice(2, -2).trimEnd()).join("");
-      assert.ok(body.includes(path));
-      assert.doesNotMatch(screen, /…\/|\.\.\./);
-      assert.equal(screen.split("\n").filter((line) => line.includes("✓ " + tool + " ")).length, 1);
-      assert.match(screen, /12ms/);
-
+      assert.ok(body.includes("codemode.md"));
+      assert.match(screen, /…\//);
+      assert.doesNotMatch(screen, /Users\/kenbanks|\.\.\./);
+      const commandRows = screen.split("\n").filter(line => line.includes("✓ " + tool + " "));
+      assert.equal(commandRows.length, 1);
+      assert.match(commandRows[0]!, /codemode\.md +12ms/);
+      if (width === 160)
+        assert.ok(commandRows[0]!.includes("…/pi-coding-agent/docs/codemode.md"));
     }
     assert.ok(plain(component(true).render(1000)).includes(code));
   }
 });
 
-test("recorded read calls show full paths when pseudocode has no matching call", () => {
+test("recorded read calls shorten paths when pseudocode has no matching call", () => {
   const path = "/Users/kenbanks/Software/ToolChain/node_modules/pi-coding-agent/docs/codemode.md";
   for (const args of [JSON.stringify({ path }), JSON.stringify({ path, limit: 100 }).slice(0, -2)]) {
     const code = "text(value);";
@@ -590,9 +607,9 @@ test("recorded read calls show full paths when pseudocode has no matching call",
       const screen = plain(lines);
       const body = screen.split("\n").filter(line => line.startsWith("│ "))
         .map(line => line.slice(2, -2).trimEnd()).join("");
-      assert.ok(body.includes(path));
-      assert.match(screen, /✓ read/);
-      assert.doesNotMatch(screen, /…\/|\{"path"/);
+      assert.ok(body.includes("codemode.md"));
+      assert.match(screen, /✓ read …\//);
+      assert.doesNotMatch(screen, /Users\/kenbanks|\{"path"/);
       assert.ok(lines.every((line) => visibleWidth(line) <= width));
       assert.match(screen, /12ms/);
     }
@@ -679,10 +696,11 @@ test("truncated host arguments attach status to one complete source command", ()
       assert.match(screen, /9ms/);
       const body = screen.split("\n").filter(line => line.startsWith("│ "))
         .map(line => line.slice(2, -2).trimEnd()).join("");
-      assert.ok(body.includes(path));
+      assert.ok(body.includes("packages.md"));
+      assert.match(screen, /✓ read …\//);
       assert.ok([...screen].filter(character => character === "界").length < 150);
       assert.match(screen, /…\s+39ms/);
-      assert.doesNotMatch(screen, /\{"command"|path truncated|\.\.\.|…\//);
+      assert.doesNotMatch(screen, /\{"command"|path truncated|\.\.\./);
       assert.ok(lines.every(line => visibleWidth(line) <= width));
     }
     const expanded = plain(component(true).render(10000));
@@ -721,7 +739,7 @@ test("ambiguous truncated argument prefixes do not assign status to a source cal
   ).render(160));
   assert.doesNotMatch(screen, /✓ read \/Users/);
   assert.match(screen, /✓ read … \(path truncated\)/);
-  for (const path of paths) assert.ok(screen.includes(path));
+  for (const name of ["first.ts", "second.ts"]) assert.ok(screen.includes("…/kenbanks/shared/" + name));
 });
 
 test("unknown tools use compact calls with status and preserve expanded source", () => {

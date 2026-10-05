@@ -447,6 +447,10 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
         }
         case "ExpressionStatement": {
           const expression = node.expression;
+          if (expression.type === "CallExpression" &&
+              expression.callee.type === "Identifier" &&
+              ["store", "load"].includes(expression.callee.name))
+            return "";
           return child(expression);
         }
         case "AwaitExpression":

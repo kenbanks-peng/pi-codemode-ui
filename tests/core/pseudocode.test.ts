@@ -10,10 +10,17 @@ test("nested callbacks retain assignments and expand try/catch blocks", () => {
   const output = pseudocode(code);
   assert.match(output, /calls ←/);
   assert.match(output, /try\n\s+value ← tools\[name\]\(args\)/);
-  assert.match(output, /store\(name, value\)/);
+  assert.doesNotMatch(output, /store\(name, value\)/);
   assert.match(output, /results ← load\("results"\)/);
   assert.match(output, /catch error\n/);
   assert.doesNotMatch(output, /try\{|catch\(/);
+});
+
+test("standalone storage calls are hidden but used results remain visible", () => {
+  const code = 'store("key", value); load("key"); const result = load("key"); ' +
+    'text(load("key")); other.store("key", value);';
+  const output = pseudocode(code, 160);
+  assert.equal(output, 'result ← load("key")\nload("key")\nother.store("key", value)');
 });
 
 test("generic layouts adapt arrays, objects, chains, and operators to width", () => {

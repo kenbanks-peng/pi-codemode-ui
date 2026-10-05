@@ -21,8 +21,9 @@ Use codemode in Pi as usual. The extension formats its results automatically.
 ## Pseudocode layout
 
 Compact view uses parsed JavaScript structure to format nested arrays, objects,
-calls, and callback blocks. It keeps variable assignments and shows
-`try` / `catch` / `finally` on separate lines. Long calls, method chains,
+calls, and callback blocks. It keeps variable assignments but hides standalone
+`store()` and `load()` calls. Calls whose results are used remain visible.
+It shows `try` / `catch` / `finally` on separate lines. Long calls, method chains,
 operators, and conditional expressions wrap at syntax boundaries as the panel
 width changes.
 
@@ -48,7 +49,9 @@ Small overrides keep file paths, shell commands, and search patterns concise.
 Compact primary calls hide read offsets, result limits, and shell timeouts.
 These fields remain in expanded code and recorded arguments.
 Shell commands use one available row with `…` for omitted content. Status and
-execution time are included in the width budget. File paths wrap in full.
+execution time are included in the width budget. File paths use one row and keep
+up to three trailing path segments. Leading segments are replaced with `…`, and
+more content is removed from the start if needed. Expanded view keeps full paths.
 `preview(width, content, maxLines)` handles text wrapping and truncation in one
 place. It counts terminal cells, supports ANSI styles, and accepts `Infinity`
 for complete content. Output text previews use eight terminal rows.

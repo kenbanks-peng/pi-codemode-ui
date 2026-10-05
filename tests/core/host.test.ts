@@ -193,7 +193,7 @@ test("duration and footer controls use the original muted hint color", () => {
   }
 });
 
-test("nested tool durations are muted for success and failure in compact and expanded views", () => {
+test("compact failed command rows are error-colored while other durations stay muted", () => {
   initTheme("dark", false);
   for (const name of ["read", "bash", "custom"]) {
     const args = name === "read" ? {path: "file.ts"} : {command: "echo test"};
@@ -210,7 +210,16 @@ test("nested tool durations are muted for success and failure in compact and exp
         shell.setExpanded(expanded);
         const timed = shell.render(80).filter(line => stripVTControlCharacters(line).includes("12ms"));
         assert.ok(timed.length > 0);
-        assert.ok(timed.every(line => line.includes(theme.fg("muted", "12ms"))));
+        if (status === "error" && !expanded) {
+          assert.ok(timed.every(line => {
+            const plain = stripVTControlCharacters(line);
+            const start = plain.indexOf("│ ") + 2;
+            const end = plain.lastIndexOf(" │");
+            return line.includes(theme.fg("error", plain.slice(start, end)));
+          }));
+        } else {
+          assert.ok(timed.every(line => line.includes(theme.fg("muted", "12ms"))));
+        }
       }
     }
   }
