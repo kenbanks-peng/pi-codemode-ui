@@ -1,11 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { stripVTControlCharacters } from "node:util";
-import {
-  initTheme,
-  ToolExecutionComponent,
-} from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
-import { codemodeRenderers } from "../src/renderer.ts";
+import { writeFileSync } from "node:fs";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createToolShell, loadFixture, renderedText } from "../tests/support/host.ts";
 
 const captures = [
   { name: "example", width: 80 },
@@ -20,23 +15,10 @@ const sections = [
 ];
 initTheme("dark", false);
 for (const capture of captures) {
-  const sample = JSON.parse(
-    readFileSync(
-      new URL("../tests/fixtures/" + capture.name + ".json", import.meta.url),
-      "utf8",
-    ),
-  );
-  const shell = new ToolExecutionComponent(
-    "codemode",
-    "capture",
-    { code: sample.code },
-    { showImages: false },
-    codemodeRenderers,
-    { requestRender() {} } as TUI,
-    process.cwd(),
-  );
+  const sample = loadFixture(capture.name);
+  const shell = createToolShell(sample.code, { id: "capture" });
   shell.updateResult(
-    capture.partial ? sample.updates[2] : sample.result,
+    capture.partial ? sample.updates[2]! : sample.result,
     capture.partial ?? false,
   );
   shell.setExpanded(capture.expanded ?? false);
@@ -48,12 +30,9 @@ for (const capture of captures) {
       " columns" +
       (capture.partial ? " · running" : capture.expanded ? " · expanded" : "") +
       "\n\n```text\n" +
-      stripVTControlCharacters(shell.render(capture.width).join("\n")).trim() +
+      renderedText(shell, capture.width).trim() +
       "\n```\n",
   );
 }
-writeFileSync(
-  new URL("../UI-CAPTURE.md", import.meta.url),
-  sections.join("\n"),
-);
+writeFileSync(new URL("../UI-CAPTURE.md", import.meta.url), sections.join("\n"));
 console.log("Wrote UI-CAPTURE.md");

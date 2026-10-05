@@ -1,46 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { stripVTControlCharacters } from "node:util";
-import {
-  initTheme,
-  ToolExecutionComponent,
-  type ExtensionAPI,
-  type ToolRendererResolver,
-} from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import extension from "../../src/index.ts";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { createToolShell, registeredRenderers, loadFixture as fixture, renderedText } from "../support/host.ts";
 import { model, isDiscovery } from "../../src/model.ts";
 
 function host(code = "text(value);") {
   initTheme("dark", false);
-  let resolver: ToolRendererResolver | undefined;
-  extension({
-    on() { return () => {}; },
-    registerShortcut() {},
-    registerToolRenderer(r: ToolRendererResolver) {
-      resolver = r;
-    },
-  } as unknown as ExtensionAPI);
-  return new ToolExecutionComponent(
-    "codemode",
-    "test",
-    { code },
-    { showImages: false },
-    resolver!("codemode", () => undefined),
-    { requestRender() {} } as TUI,
-    process.cwd(),
-  );
+  return createToolShell(code, { renderers: registeredRenderers() });
 }
-const fixture = (name: string) =>
-  JSON.parse(
-    readFileSync(
-      new URL("../fixtures/" + name + ".json", import.meta.url),
-      "utf8",
-    ),
-  );
-const plain = (shell: ToolExecutionComponent, width = 100) =>
-  stripVTControlCharacters(shell.render(width).join("\n"));
+const plain = (shell: ReturnType<typeof host>, width = 100) => renderedText(shell, width);
 const result = (texts: string[], details: unknown = {}) => ({
   content: texts.map((text) => ({ type: "text" as const, text })),
   details,
@@ -82,7 +51,7 @@ for (const name of [
     assert.match(expanded, /Calls/);
     assert.match(expanded, /Raw output/);
     for (const block of sample.result.content) {
-      if (block.type === "text")
+      if (block.type === "text" && typeof block.text === "string")
         for (const line of block.text.split("\n"))
           assert.ok(
             expanded.includes(line),
@@ -108,7 +77,7 @@ test("compact syntax layouts follow panel width and retain expanded source", () 
   assert.match(narrow, /catch error/);
   assert.doesNotMatch(narrow, /try \{/);
   const wide = plain(shell, 120);
-  assert.match(wide, /accepted ← \(firstCondition and secondCondition\)/);
+  assert.match(wide, /\(firstCondition and secondCondition\)/);
   assert.equal(plain(shell, 40), narrow);
   for (const width of [20, 40, 120])
     assert.ok(shell.render(width).every(line => visibleWidth(line) <= width));

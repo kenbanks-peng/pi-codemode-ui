@@ -1,3 +1,5 @@
+import { preferredFields, toolDisplay } from "./tool-display.ts";
+
 /** Data only. Output blocks and call records deliberately have no join key. */
 export const record = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -60,6 +62,11 @@ export function isDiscovery(v: unknown): v is Record<string, unknown>[] {
     )
   );
 }
+export function isErrorOutput(value: unknown): boolean {
+  return record(value) &&
+    ((typeof value.exit_code === "number" && value.exit_code !== 0) || value.isError === true);
+}
+
 /** Recover only the intact prefix of a host-truncated discovery array. */
 function partialDiscovery(raw: string): Record<string, unknown>[] | undefined {
   if (raw.length > 131072) return;
@@ -186,7 +193,7 @@ export function model(result: unknown, isError: boolean): Model {
       const pathMatch = args.match(/^\s*\{\s*"path"\s*:\s*("(?:\\.|[^"\\])*")\s*[,}]/);
       const retainedPath = pathMatch ? string(JSON.parse(pathMatch[1]!)) : "";
       const target = record(parsed)
-        ? (["path", "pattern", "command", "query", "name"]
+        ? ([...preferredFields(toolDisplay(string(c.name))), "path", "pattern", "command", "query", "name"]
             .map((k) => string(parsed[k]))
             .find(Boolean) ?? args)
         : retainedPath || args;

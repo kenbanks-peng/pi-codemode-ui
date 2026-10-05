@@ -5,75 +5,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   truncateToWidth,
-  rgbColor,
   visibleWidth,
   type Component,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { isDiscovery, record, safeText, type Call, type Model } from "./model.ts";
+import { isErrorOutput, safeText, type Call, type Model } from "./model.ts";
 import { summarize, type ToolSummary } from "./pseudocode.ts";
 import { preview } from "./preview.ts";
-
-const formatDuration = (ms: number): string =>
-  ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : Math.round(ms) + "ms";
-
-const scalar = (v: unknown): string =>
-  typeof v === "string" ? v : (JSON.stringify(v) ?? String(v));
-const label = (s: string) =>
-  s.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
-const simple = (v: unknown) =>
-  v === null || ["string", "number", "boolean"].includes(typeof v);
-
-/** Conservative relative path list; never infer a tree from arbitrary prose. */
-function tree(value: unknown): string[] | undefined {
-  const paths =
-    typeof value === "string"
-      ? value.trim().split("\n")
-      : Array.isArray(value) && value.every((x) => typeof x === "string")
-        ? value
-        : [];
-  if (
-    paths.length < 2 ||
-    paths.length > 100 ||
-    paths.join("").length > 16384 ||
-    new Set(paths).size !== paths.length ||
-    paths.some(
-      (p) =>
-        p.split("/").length > 32 ||
-        paths.some((other) => other.startsWith(p + "/")),
-    ) ||
-    !paths.every((p) => /^(?:[\w.@ -]+\/)+[\w.@ -]+$/.test(p))
-  )
-    return;
-  interface Node {
-    children: Map<string, Node>;
-  }
-  const root: Node = { children: new Map() };
-  for (const path of paths) {
-    let node = root;
-    for (const part of path.split("/")) {
-      if (!node.children.has(part))
-        node.children.set(part, { children: new Map() });
-      node = node.children.get(part)!;
-    }
-  }
-  const lines: string[] = [];
-  function walk(node: Node, prefix: string, top: boolean) {
-    const entries = [...node.children];
-    entries.forEach(([name, child], i) => {
-      const last = i === entries.length - 1;
-      lines.push(
-        prefix +
-          (top ? "" : last ? "└─ " : "├─ ") +
-          name +
-          (child.children.size ? "/" : ""),
-      );
-      walk(child, prefix + (top ? "" : last ? "   " : "│  "), false);
-    });
-  }
-  walk(root, "", true);
-  return lines;
-}
+import { callAppearance, formatDuration } from "./call-status.ts";
+import { renderCompactCommand } from "./compact-call.ts";
+import { renderOutputValue } from "./formatted-value.ts";
+import { mutedBorder } from "./panel-style.ts";
+import { targetField, isShellTool } from "./tool-display.ts";
 
 /** Compare an incomplete host JSON string with a full source literal.
  * Do not decode a cut escape or treat a complete/malformed object as a prefix.
@@ -81,9 +24,7 @@ function tree(value: unknown): string[] | undefined {
 function targetPrefixMatches(call: Call, target: string): boolean {
   if (call.target !== call.args) return false;
   try { JSON.parse(call.args); return false; } catch { /* host preview may be cut */ }
-  const field = ({read: "path", edit: "path", write: "path", ls: "path",
-    bash: "command", powershell: "command", grep: "pattern", find: "pattern"
-  } as Record<string, string>)[call.name.toLowerCase()];
+  const field = targetField(call.name);
   if (!field) return false;
   const retained = call.args.replace(/(?:\.{3}|…)$/, "");
   // The host can cut a later option after the target string has closed.
@@ -128,33 +69,21 @@ export class Screen implements Component {
     return undefined;
   }
   render(width: number): string[] {
-    return this.draw(width, false);
-  }
-  renderFormattedOutput(width: number): string[] {
-    return this.draw(width, true);
-  }
-  private draw(width: number, outputOnly: boolean): string[] {
     this.buttonRow = -1;
     width = Math.max(0, Math.floor(width));
     if (!width) return [];
-    if (!outputOnly && width < 11) return [truncateToWidth("CODEMODE", width, "")];
-    const w = outputOnly ? width : width - 4;
+    if (width < 11) return [truncateToWidth("CODEMODE", width, "")];
+    const w = width - 4;
     const lines: string[] = [];
     const fg = (token: ThemeColor, s: string) => this.theme.fg(token, s);
-    const border = (s: string) => {
-      const muted = this.theme.getFgAnsi("muted");
-      const rgb = muted.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-      if (!rgb) return fg("muted", s);
-      const color = rgb.slice(1).map((channel) => Math.round(Number(channel) * 0.85));
-      return this.theme.style(s, { fg: rgbColor(color[0]!, color[1]!, color[2]!) });
-    };
-    const rule = (title: string, top = false) => {
-      const left = (top ? "╭─ " : "├─ ") + title + " ";
+    const border = (text: string) => mutedBorder(this.theme, text);
+    const rule = (title: string) => {
+      const left = "├─ " + title + " ";
       lines.push(
         border(
           truncateToWidth(left, width - 1, "") +
             "─".repeat(Math.max(0, width - visibleWidth(left) - 1)) +
-            (top ? "╮" : "┤"),
+            "┤",
         ),
       );
     };
@@ -162,10 +91,6 @@ export class Screen implements Component {
     const row = (text = "", token: ThemeColor = outputColor, styled = false) => {
       for (const part of preview(w, styled ? text : safeText(text), Infinity)) {
         const fitted = truncateToWidth(part, w, "");
-        if (outputOnly) {
-          lines.push(fg(token, fitted));
-          continue;
-        }
         lines.push(
           border("│ ") +
             fg(token, fitted) +
@@ -178,7 +103,7 @@ export class Screen implements Component {
       this.data.cards.some(card => !card.confirmation &&
         (typeof card.value !== "string" || card.value.trim().length > 0)));
     const heading = (text: string) => {
-      if (!outputOnly || lines.length) row();
+      row();
       row(text, outputColor === "error" ? "error" : "accent");
       row(border("─".repeat(w)), "toolOutput", true);
     };
@@ -202,281 +127,17 @@ export class Screen implements Component {
         if (right) row(right, rightToken);
       }
     };
-    const hidden = (n: number, unit: string) => {
-      if (n > 0) row("… " + n + " more " + unit + " in raw output", "muted");
+    const textBody = (text: string, all = false) => {
+      for (const part of preview(w, safeText(text), all ? Infinity : 8))
+        row(part);
     };
-    const textBody = (text: string, all = false, indent = "") => {
-      all ||= outputOnly;
-      for (const part of preview(Math.max(1, w - visibleWidth(indent)),
-        safeText(text), all ? Infinity : 8))
-        row(indent + part);
+    const body = (value: unknown) => {
+      for (const line of renderOutputValue(value, w, this.theme, false, outputColor))
+        row(line, outputColor, true);
     };
-    const fields = (entries: [string, unknown][], depth = 0) => {
-      if (!entries.length) {
-        row("{}");
-        return;
-      }
-      const shown = entries.slice(0, outputOnly ? undefined : 8);
-      const labels = shown.map(([k]) => safeText(label(k)));
-      const column = Math.min(
-        20,
-        Math.max(0, ...labels.map((s) => visibleWidth(s))),
-      );
-      shown.forEach(([, v], i) => {
-        const name = labels[i]!;
-        const value =
-          Array.isArray(v) && v.length > 0 && v.every(simple)
-            ? v.map(scalar).join(" · ")
-            : scalar(v);
-        if (record(v) && depth < 2) {
-          row(name, "muted");
-          fields(Object.entries(v), depth + 1);
-        } else if (
-          w < 48 ||
-          visibleWidth(name) > column ||
-          value.includes("\n") ||
-          value.length > 1000
-        ) {
-          row(name, "muted");
-          textBody(value, false, "  ");
-        } else {
-          const prefix = name + " ".repeat(column - visibleWidth(name) + 2);
-          const available = w - visibleWidth(prefix);
-          const parts = preview(available, safeText(value), outputOnly ? Infinity : 8);
-          parts.forEach((part, j) =>
-            row((j ? " ".repeat(visibleWidth(prefix)) : prefix) + part),
-          );
-        }
-      });
-      hidden(entries.length - shown.length, "fields");
-    };
-    const body = (v: unknown): void => {
-      const paths = tree(v);
-      if (paths) {
-        paths.slice(0, outputOnly ? undefined : 16).forEach((p) => row(p));
-        if (!outputOnly) hidden(paths.length - 16, "tree entries");
-        return;
-      }
-      if (isDiscovery(v)) {
-        const groups = new Map<string, { name: string; description: string }[]>();
-        for (const tool of v) {
-          const match = String(tool.name).match(/^mcp__(.+?)__(.+)$/);
-          const provider = match?.[1] ?? "";
-          const entries = groups.get(provider) ?? [];
-          entries.push({
-            name: safeText(match?.[2] ?? String(tool.name)),
-            description: safeText(String(tool.description).split(/\n|(?<=\.)\s/)[0] ?? ""),
-          });
-          groups.set(provider, entries);
-        }
-        const clip = (text: string, size: number) => {
-          return preview(size, text.replace(/\s+/g, " "), 1)[0] ?? "";
-        };
-        for (const [provider, entries] of groups) {
-          if (provider) {
-            row();
-            const name = provider.toLowerCase() === "gitnexus" ? "GitNexus" : provider;
-            row(clip(name + " · " + entries.length + " tools", w), "muted");
-          }
-          const column = Math.min(
-            Math.max(...entries.map((tool) => visibleWidth(tool.name))),
-            Math.max(1, Math.floor(w / 3)),
-          );
-          for (const tool of entries) {
-            const name = clip(tool.name, column);
-            const available = w - column - 2;
-            const description = available >= 4 ? clip(tool.description, available) : "";
-            row(fg("accent", name) +
-              (description ? " ".repeat(column - visibleWidth(name) + 2) + description : ""),
-              "toolOutput", true);
-          }
-        }
-        row("Full descriptions and declarations in raw output", "muted");
-        return;
-      }
-      if (Array.isArray(v) && v.length && v.every(record)) {
-        const keys = Object.keys(v[0]!);
-        if (
-          keys.length > 0 &&
-          keys.length <= 6 &&
-          v.every(
-            (item) =>
-              Object.keys(item).length === keys.length &&
-              keys.every(
-                (k) =>
-                  k in item &&
-                  simple(item[k]) &&
-                  !scalar(item[k]).includes("\n"),
-              ),
-          )
-        ) {
-          const shown = v.slice(0, outputOnly ? undefined : 8);
-          const sizes = keys.map((k) =>
-            Math.max(
-              visibleWidth(safeText(k)),
-              ...shown.map((item) => visibleWidth(safeText(scalar(item[k])))),
-            ),
-          );
-          if (sizes.reduce((a, b) => a + b, 0) + (keys.length - 1) * 3 <= w) {
-            const tableRow = (values: string[]) =>
-              values
-                .map(
-                  (x, i) =>
-                    safeText(x) +
-                    " ".repeat(sizes[i]! - visibleWidth(safeText(x))),
-                )
-                .join("   ");
-            row(tableRow(keys), "muted");
-            shown.forEach((item) =>
-              row(tableRow(keys.map((k) => scalar(item[k])))),
-            );
-          } else
-            shown.forEach((item, i) => {
-              row("Record " + (i + 1), "muted");
-              fields(Object.entries(item));
-            });
-          hidden(v.length - shown.length, "records");
-          return;
-        }
-      }
-      if (
-        record(v) &&
-        typeof v.name === "string" &&
-        typeof v.version === "string" &&
-        v.type === "module" &&
-        record(v.pi) &&
-        Array.isArray(v.pi.extensions)
-      ) {
-        const keys = [
-          "name",
-          "version",
-          "description",
-          "type",
-          "keywords",
-          "files",
-          "pi",
-        ];
-        const entries: [string, unknown][] = keys
-          .filter((k) => k in v)
-          .map((k) =>
-            k === "type"
-              ? ["Module", "ESM"]
-              : k === "pi"
-                ? ["Extension", (v.pi as Record<string, unknown>).extensions]
-                : [k, v[k]],
-          );
-        fields(entries);
-        const extra =
-          Object.keys(v).filter((k) => !keys.includes(k)).length +
-          Object.keys(v.pi).filter((k) => k !== "extensions").length;
-        hidden(extra, "fields");
-        return;
-      }
-      if (record(v) && Array.isArray(v.content) && v.content.every(record)) {
-        if (v.isError === true) row("✗ Tool result failed", "error");
-        for (const block of v.content.slice(0, outputOnly ? undefined : 8)) {
-          if (block.type === "text" && typeof block.text === "string")
-            textBody(block.text);
-          else if (block.type === "image")
-            row("Image · " + String(block.mimeType ?? "image"), "muted");
-          else fields(Object.entries(block));
-        }
-        if (!outputOnly) hidden(v.content.length - 8, "content blocks");
-        const extra = Object.entries(v).filter(
-          ([k]) => !["content", "isError"].includes(k),
-        );
-        if (extra.length) fields(extra);
-        return;
-      }
-      if (
-        record(v) &&
-        typeof v.output === "string" &&
-        typeof v.exit_code === "number"
-      ) {
-        paired(
-          "Exit " + v.exit_code,
-          typeof v.wall_time_seconds === "number"
-            ? v.wall_time_seconds + "s"
-            : "",
-          v.exit_code === 0 ? "muted" : "error",
-        );
-        textBody(v.output.replace(/\n$/, ""));
-        if (v.truncated === true) row("Output truncated", "warning");
-        if (typeof v.full_output_path === "string")
-          row("Full output: " + v.full_output_path, "warning");
-        const extra = Object.entries(v).filter(
-          ([k]) =>
-            ![
-              "output",
-              "exit_code",
-              "wall_time_seconds",
-              "truncated",
-              "full_output_path",
-            ].includes(k),
-        );
-        if (extra.length) fields(extra);
-        return;
-      }
-      if (record(v)) {
-        fields(Object.entries(v));
-        return;
-      }
-      if (Array.isArray(v)) {
-        v.slice(0, outputOnly ? undefined : 8).forEach((item) => textBody(scalar(item)));
-        if (!outputOnly) hidden(v.length - 8, "items");
-        if (!v.length) row("[]");
-        return;
-      }
-      textBody(scalar(v));
-    };
-    if (outputOnly) {
-      if (this.data.error) {
-        heading("Error");
-        row(this.data.error, "error");
-      }
-      for (const card of this.data.cards.filter(card => !card.confirmation)) {
-        const failed = record(card.value) &&
-          ((typeof card.value.exit_code === "number" && card.value.exit_code !== 0) ||
-            card.value.isError === true);
-        outputColor = failed ? "error" : "toolOutput";
-        heading(failed ? "Error" : isDiscovery(card.value)
-          ? card.title + " · " + card.value.length +
-            (card.partialDiscovery ? " retained matches" : " matches")
-          : card.title);
-        if (card.partialDiscovery) row("Partial tool list · complete entries only", "warning");
-        body(card.value);
-        outputColor = "toolOutput";
-      }
-      if (!lines.length) row(this.data.cards.length ? "No additional output" : "No text output", "muted");
-      if (this.data.path) {
-        heading("Output truncated");
-        row("Full output: " + this.data.path, "warning");
-      }
-      for (const mime of this.data.images) row("Image · " + mime + " (displayed by Pi)", "muted");
-      return lines;
-    }
-    const calls = (all: boolean, selected?: Call[]) => {
-      const source = selected ?? (all
-        ? this.data.calls
-        : [...this.data.calls]
-            .sort(
-              (a, b) => Number(a.status === "ok") - Number(b.status === "ok"),
-            )
-            .slice(0, 8));
-      for (const c of source) {
-        const symbol =
-          (
-            { ok: "✓", running: "…", error: "✗", cancelled: "–" } as Record<
-              string,
-              string
-            >
-          )[c.status] ?? "";
-        const color =
-          c.status === "ok"
-            ? "success"
-            : c.status === "error"
-              ? "error"
-              : "warning";
+    const expandedCalls = () => {
+      for (const c of this.data.calls) {
+        const { symbol, color } = callAppearance(c);
         const duration =
           c.duration === undefined ? "" : formatDuration(c.duration);
         if (
@@ -492,16 +153,9 @@ export class Screen implements Component {
           row(c.status, "warning");
         if (c.error) row(c.error, "error");
         if (c.cost !== undefined) row("Cost: $" + c.cost, "muted");
-        if (all && c.args !== c.target) row("Arguments: " + c.args, "muted");
+        if (c.args !== c.target) row("Arguments: " + c.args, "muted");
       }
-      if (!all && this.data.calls.length > source.length)
-        row(
-          "… " +
-            (this.data.calls.length - source.length) +
-            " more calls in expanded view",
-          "muted",
-        );
-      if (!source.length) row("No nested tool calls", "muted");
+      if (!this.data.calls.length) row("No nested tool calls", "muted");
     };
     const statusColor: ThemeColor = this.partial ? "warning" : this.data.failed ? "error" : "success";
     const count = this.data.calls.length;
@@ -528,11 +182,7 @@ export class Screen implements Component {
       lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
       return lines;
     }
-    const errorCards = this.data.cards.filter((card) =>
-      record(card.value) &&
-      ((typeof card.value.exit_code === "number" && card.value.exit_code !== 0) ||
-       card.value.isError === true),
-    );
+    const errorCards = this.data.cards.filter(card => isErrorOutput(card.value));
     const failedCalls = this.data.calls.filter((call) => call.status === "error" || call.error);
     if (this.data.error || (this.data.failed && (failedCalls.length || errorCards.length))) {
       heading("Error");
@@ -576,8 +226,7 @@ export class Screen implements Component {
       const annotations = new Map<number, { symbol: string; color: ThemeColor; call?: Call; defaultTool?: boolean }>();
       const commandColor = (name: string, call?: Call): ThemeColor => {
         const tool = name.toLowerCase();
-        if (call?.status === "error" || call?.error) return "error";
-        if (call?.status === "ok") return "success";
+        if (call) return callAppearance(call, "syntaxFunction").color;
         if (!call && ["searchTools", "describeTool", "describeNamespace"].includes(name) &&
             !this.partial && !this.data.failed) return "success";
         if (!this.partial && !this.data.failed &&
@@ -664,136 +313,42 @@ export class Screen implements Component {
           }
           if (call) used.add(call);
           const color = commandColor(match, call);
-          const symbol = color === "error" ? "✗" : color === "success" ? "✓"
-            : call?.status === "running" || (!call && match === "searchTools" && this.partial)
-              ? "…" : call?.status === "cancelled" ? "–"
-              : !call && generic && this.partial ? "…" : "";
+          const symbol = call ? callAppearance(call).symbol
+            : color === "error" ? "✗" : color === "success" ? "✓"
+            : this.partial && (match === "searchTools" || generic) ? "…" : "";
           annotations.set(source.slice(0, offset).split("\n").length - 1, { symbol, color, call, defaultTool: compactName !== undefined && !compactCall?.command });
           return fg(color, displayName);
         },
       );
-      const commandRow = (text: string, color?: ThemeColor) => {
-        if (color === "error") {
-          const plain = text.replace(/\x1b\[[0-9;]*m/g, "");
-          row(fg("error", plain + " ".repeat(Math.max(0, w - visibleWidth(plain)))),
-            "toolOutput", true);
-        } else row(text, "toolOutput", true);
-      };
-      const fileCommand = (
-        command: string, duration: string, color: ThemeColor,
-        timeColor: ThemeColor, call?: Call,
-      ): boolean => {
-        const fileRow = command.replace(/\x1b\[[0-9;]*m/g, "").match(
-          /^((?:[✓✗…–?] )?(?:read|edit|write|ls) )(.+)$/,
-        );
-        if (fileRow) {
-          const left = fileRow[1]!;
-          let original = fileRow[2]!;
-          if (original.trimStart().startsWith("{")) {
-            // Host records can cut arguments before the path's closing quote.
-            // Never present part of a JSON payload as a recovered filename.
-            const retained = original.match(/^\s*\{\s*"path"\s*:\s*("(?:\\.|[^"\\])*")\s*[,}]/);
-            if (retained) {
-              try { original = JSON.parse(retained[1]!) as string; }
-              catch { return false; }
-            } else if (/^\s*\{\s*"path"\s*:\s*"/.test(original)) {
-              original = "… (path truncated)";
-            } else return false;
-          }
-          const available = Math.max(0, w - visibleWidth(left) -
-            (duration ? visibleWidth(duration) + 2 : 0));
-          const separator = original.includes("/") ? "/" : "\\";
-          const segments = safeText(original).split(separator);
-          let target = segments.length > 3
-            ? "…" + separator + segments.slice(-3).join(separator) : segments.join(separator);
-          while (visibleWidth(target) > available && segments.length > 1) {
-            segments.shift();
-            target = "…" + separator + segments.join(separator);
-          }
-          if (visibleWidth(target) > available) {
-            const tail = Array.from(segments[0] ?? target);
-            while (tail.length && visibleWidth("…" + tail.join("")) > available) tail.shift();
-            target = available ? "…" + tail.join("") : "";
-          }
-          const fitted = truncateToWidth(left + target, w, "")
-            .replace(/\x1b\[[0-9;]*m/g, "");
-          const gap = duration ? Math.max(0, w - visibleWidth(fitted) - visibleWidth(duration)) : 0;
-          const nameStart = left.match(/^[✓✗…–?] /)?.[0].length ?? 0;
-          const nameEnd = left.trimEnd().length;
-          const styledCommand = color === "error" ? fg(color, fitted)
-            : fg(color, fitted.slice(0, nameStart)) +
-              fg(color, fitted.slice(nameStart, nameEnd)) + fitted.slice(nameEnd);
-          commandRow(styledCommand + " ".repeat(gap) + fg(timeColor, duration), color);
-          if (call?.status === "cancelled") row("cancelled", "warning");
-          if (call?.cost !== undefined) row("Cost: $" + call.cost, "muted");
-          return true;
-        }
-        return false;
-      };
       styled.split("\n").forEach((line, index) => {
         const annotation = annotations.get(index);
         const call = annotation?.call;
         const prefix = annotation?.symbol ? fg(annotation.color, annotation.symbol) + " " : "";
-        const duration = call?.duration === undefined ? "" : formatDuration(call.duration);
-        const timeColor: ThemeColor = "muted";
         const command = annotation?.color === "error"
           ? fg("error", (annotation.symbol ? annotation.symbol + " " : "") +
               line.replace(/\x1b\[[0-9;]*m/g, ""))
           : prefix + line;
-        if (!annotation?.defaultTool && fileCommand(command, duration, annotation?.color ?? "syntaxFunction", timeColor, call)) return;
-        const shell = /^(?:bash|powershell)$/i.test(compactByLine.get(index)?.[0]?.name ?? call?.name ?? "");
-        const parts = preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
-          command, shell ? 1 : annotation ? 3 : Infinity);
-        parts.forEach((part, i) => {
-          if (duration && i === parts.length - 1 && visibleWidth(part) + duration.length + 2 <= w)
-            commandRow(part + " ".repeat(w - visibleWidth(part) - duration.length) + fg(timeColor, duration), annotation?.color);
-          else {
-            commandRow(part, annotation?.color);
-            if (duration && i === parts.length - 1)
-              commandRow(" ".repeat(Math.max(0, w - duration.length)) + fg(timeColor, duration), annotation?.color);
-          }
-        });
-        if (call?.status === "cancelled") row("cancelled", "warning");
-        if (call?.cost !== undefined) row("Cost: $" + call.cost, "muted");
+        const shell = isShellTool(compactByLine.get(index)?.[0]?.name ?? call?.name ?? "");
+        for (const part of renderCompactCommand(command, w, this.theme, {
+          call, color: annotation?.color ?? "syntaxFunction",
+          filePath: !annotation?.defaultTool, maxLines: shell ? 1 : annotation ? 3 : Infinity,
+        })) row(part, "toolOutput", true);
       });
-      const unmatched = this.data.calls.filter((call) => !used.has(call));
-      for (const call of unmatched) {
-        const color = call.status === "error" || call.error ? "error"
-          : call.status === "ok" ? "success" : "warning";
-        const symbol = color === "error" ? "✗" : color === "success" ? "✓" : "…";
-        const command = symbol + " " + call.name.toLowerCase();
+      for (const call of this.data.calls.filter(call => !used.has(call))) {
+        const { color, symbol } = callAppearance(call);
+        const command = (symbol ? symbol + " " : "") + call.name.toLowerCase();
         const target = call.target &&
           !(["edit", "write"].includes(call.name) && call.target.trimStart().startsWith("{"))
           ? " " + safeText(call.target) : "";
-        const duration = call.duration === undefined ? "" : formatDuration(call.duration);
-        if (fileCommand(command + target, duration, color, "muted", call)) continue;
         const left = color === "error" ? fg(color, command + target) : fg(color, command) + target;
-        if (visibleWidth(left) + duration.length + 2 <= w)
-          commandRow(left + " ".repeat(w - visibleWidth(left) - duration.length) + fg("muted", duration), color);
-        else {
-          const shell = /^(?:bash|powershell)$/i.test(call.name);
-          const parts = preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
-            left, shell ? 1 : 3);
-          parts.forEach((part, index) => {
-            if (duration && index === parts.length - 1 &&
-                visibleWidth(part) + visibleWidth(duration) + 2 <= w)
-              commandRow(part + " ".repeat(w - visibleWidth(part) - visibleWidth(duration)) +
-                fg("muted", duration), color);
-            else {
-              commandRow(part, color);
-              if (duration && index === parts.length - 1)
-                commandRow(" ".repeat(Math.max(0, w - visibleWidth(duration))) +
-                  fg("muted", duration), color);
-            }
-          });
-        }
-        if (call.status === "cancelled") row("cancelled", "warning");
-        if (call.cost !== undefined) row("Cost: $" + call.cost, "muted");
+        for (const part of renderCompactCommand(left, w, this.theme, {
+          call, color, filePath: true, maxLines: isShellTool(call.name) ? 1 : 3,
+        })) row(part, "toolOutput", true);
       }
     }
     if (this.expanded) {
       rule("Calls");
-      calls(true);
+      expandedCalls();
       heading("Raw output");
       this.data.raw.forEach((raw, i) => {
         if (i) row();

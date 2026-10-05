@@ -2,16 +2,33 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pseudocode, summarize } from "../../src/pseudocode.ts";
 
-test("nested callbacks retain assignments and expand try/catch blocks", () => {
+test("variable declaration prefixes are hidden in all compact render paths", () => {
+  for (const declaration of [
+    'const variable = await tools.read({path: "file.ts"});',
+    'let variable = await tools.read({path: "file.ts"});',
+    'var variable = await tools.read({path: "file.ts"});',
+    'const {output} = await tools.read({path: "file.ts"});',
+    'const [output] = await tools.read({path: "file.ts"});',
+  ]) {
+    for (const prefix of ["", "try {\n", "/* large */".repeat(5000) + "\n"]) {
+      const summary = summarize(prefix + declaration);
+      assert.doesNotMatch(summary.text, /variable|output|←/);
+      assert.ok(summary.text.includes("read file.ts"));
+      assert.equal(summary.calls.length, 1);
+    }
+  }
+});
+
+test("nested callbacks hide declarations and expand try/catch blocks", () => {
   const code = 'const calls = [["read", {path: "a.ts"}], ["find", {pattern: "renderer"}]]; ' +
     'await Promise.all(calls.map(async ([name, args]) => {try {const value = await tools[name](args); ' +
     'store(name, value); const results = load("results"); results[name] = "called"; text({name, value});}' +
     'catch (error) {text({name, error: String(error)});}}));';
   const output = pseudocode(code);
-  assert.match(output, /calls ←/);
-  assert.match(output, /try\n\s+value ← tools\[name\]\(args\)/);
+  assert.doesNotMatch(output, /calls ←|value ←|results ←/);
+  assert.match(output, /try\n\s+tools\[name\]\(args\)/);
   assert.doesNotMatch(output, /store\(name, value\)/);
-  assert.match(output, /results ← load\("results"\)/);
+  assert.match(output, /load\("results"\)/);
   assert.match(output, /catch error\n/);
   assert.doesNotMatch(output, /try\{|catch\(/);
 });
@@ -20,7 +37,7 @@ test("standalone storage calls are hidden but used results remain visible", () =
   const code = 'store("key", value); load("key"); const result = load("key"); ' +
     'text(load("key")); other.store("key", value);';
   const output = pseudocode(code, 160);
-  assert.equal(output, 'result ← load("key")\nload("key")\nother.store("key", value)');
+  assert.equal(output, 'load("key")\nload("key")\nother.store("key", value)');
 });
 
 test("generic layouts adapt arrays, objects, chains, and operators to width", () => {
@@ -30,9 +47,9 @@ test("generic layouts adapt arrays, objects, chains, and operators to width", ()
     'const accepted = firstCondition && secondCondition;';
   const narrow = pseudocode(code, 40);
   const wide = pseudocode(code, 160);
-  assert.match(narrow, /jobs ← \[\n/);
+  assert.match(narrow, /\[\n/);
   assert.match(narrow, /\n\s+\.split\("\\n"\)/);
-  assert.match(narrow, /\n\s+and secondCondition/);
+  assert.match(narrow, /firstCondition and secondCondition/);
   assert.match(wide, /load\("bash"\).output.trim\(\).split\("\\n"\).pop\(\)/);
   assert.ok(narrow.split("\n").length > wide.split("\n").length);
   assert.doesNotMatch(narrow, /…/);
@@ -304,7 +321,7 @@ test("parallel shell batches retain literal identities and readable output", () 
     'const result = await tools.powershell({command}); text({index, ...result}); }));';
   for (const width of [30, 80, 160]) {
     const summary = summarize(code, width);
-    assert.match(summary.text, /commands ← \[2 shell commands\]/);
+    assert.match(summary.text, /\[2 shell commands\]/);
     assert.match(summary.text, /parallel commands.map\(command, index\)/);
     assert.match(summary.text, /powershell · First/);
     assert.match(summary.text, /powershell echo second/);

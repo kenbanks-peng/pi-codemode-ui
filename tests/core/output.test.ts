@@ -1,23 +1,19 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import {
   initTheme,
-  ToolExecutionComponent,
   type ExtensionAPI,
   type ExtensionContext,
   type Theme,
   type ToolRendererResolver,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI, type Component } from "@earendil-works/pi-tui";
-import { theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { createToolShell, loadFixture, renderedText as plain, hostTheme as theme } from "../support/host.ts";
 import extension from "../../src/index.ts";
 import { OutputViewer } from "../../src/output.ts";
 import { model } from "../../src/model.ts";
 
-const plain = (component: Component, width = 80) =>
-  stripVTControlCharacters(component.render(width).join("\n"));
 test("output viewer scrolls all outputs in order, closes, and fits narrow widths", () => {
   initTheme("dark", false);
   let closed = false;
@@ -71,8 +67,7 @@ test("output viewer scrolls all outputs in order, closes, and fits narrow widths
 
 test("output popup retains the truncation notice and full output path", () => {
   initTheme("dark", false);
-  const sample = JSON.parse(readFileSync(
-    new URL("../fixtures/truncated.json", import.meta.url), "utf8"));
+  const sample = loadFixture("truncated");
   const data = model(sample.result, false);
   const viewer = new OutputViewer(data,
     { terminal: { rows: 200 }, requestRender() {} } as TUI, theme, () => {});
@@ -80,8 +75,44 @@ test("output popup retains the truncation notice and full output path", () => {
   assert.match(screen, /Output truncated/);
   assert.ok(screen.includes("Full output: " + data.path));
   assert.ok(data.path);
-  assert.deepEqual(sample.result, JSON.parse(readFileSync(
-    new URL("../fixtures/truncated.json", import.meta.url), "utf8")).result);
+  assert.deepEqual(sample.result, loadFixture("truncated").result);
+});
+
+test("formatted output keeps complete fields and nested content after theme changes", () => {
+  initTheme("dark", false);
+  const fields = Object.fromEntries(Array.from({ length: 12 }, (_, i) => ["field_" + i, "value-" + i]));
+  const result = { content: [
+    { type: "text", text: JSON.stringify(fields) },
+    { type: "text", text: JSON.stringify({
+      isError: true,
+      content: [
+        { type: "text", text: "nested failure\\u001b[2J" },
+        { type: "image", mimeType: "image/png" },
+      ],
+    }) },
+  ] };
+  const before = structuredClone(result);
+  const viewer = new OutputViewer(model(result, false),
+    { terminal: { rows: 200 }, requestRender() {} } as TUI, theme, () => {});
+  const dark = viewer.render(100);
+  for (const themeName of ["light", "dark"]) {
+    initTheme(themeName, false);
+    viewer.invalidate();
+    for (const width of [20, 100]) {
+      const lines = viewer.render(width);
+      const text = lines.map(stripVTControlCharacters).join("\n");
+      assert.ok(lines.every(line => visibleWidth(line) <= width));
+      assert.match(text, /value-11/);
+      assert.match(text, /Image ·/);
+      assert.match(text, /image\/png/);
+      assert.doesNotMatch(text, /more fields|more content blocks/);
+      const failure = lines.find(line => stripVTControlCharacters(line).includes("nested"))!;
+      assert.ok(failure.includes(theme.getFgAnsi("error")));
+      assert.ok(!lines.join("\n").includes("\u001b[2J"));
+    }
+    if (themeName === "light") assert.notDeepEqual(viewer.render(100), dark);
+  }
+  assert.deepEqual(result, before);
 });
 
 test("viewer supports Vim line, half-screen, and top/bottom motions", () => {
@@ -127,7 +158,7 @@ test("viewer supports Vim line, half-screen, and top/bottom motions", () => {
 
 test("popup restores formatted metadata, file trees, tables, and tool discovery", () => {
   initTheme("dark", false);
-  const sample = JSON.parse(readFileSync(new URL("../fixtures/example.json", import.meta.url), "utf8"));
+  const sample = loadFixture("example");
   const before = structuredClone(sample.result);
   const viewer = new OutputViewer(model(sample.result, false),
     { terminal: { rows: 200 }, requestRender() {} } as TUI, theme, () => {});
@@ -218,15 +249,9 @@ test("real host button opens its own run; shortcut opens latest run without chan
   } as unknown as ExtensionAPI);
   start(undefined as never, ctx);
   const shell = (id: string, text: string) => {
-    const component = new ToolExecutionComponent(
-      "codemode",
-      id,
-      { code: "text(value);" },
-      {},
-      resolver("codemode", () => undefined),
-      { requestRender() {} } as TUI,
-      process.cwd(),
-    );
+    const component = createToolShell("text(value);", {
+      id, renderers: resolver("codemode", () => undefined),
+    });
     component.updateResult(
       { content: [{ type: "text", text }], isError: false },
       false,

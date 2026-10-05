@@ -3,15 +3,14 @@ import { stripVTControlCharacters } from "node:util";
 import { test } from "node:test";
 import {
   initTheme,
-  ToolExecutionComponent,
+  type ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
   getCapabilities,
   setCapabilities,
-  type TUI,
 } from "@earendil-works/pi-tui";
 import { codemodeRenderers } from "../../src/renderer.ts";
-import { theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { createToolShell, hostTheme as theme } from "../support/host.ts";
 
 test("Pi's real tool shell still renders image bytes and handles expansion/replay", () => {
   initTheme("dark", false);
@@ -30,15 +29,7 @@ test("Pi's real tool shell still renders image bytes and handles expansion/repla
       isError: false,
     };
     const before = structuredClone(result);
-    const shell = new ToolExecutionComponent(
-      "codemode",
-      "replay-1",
-      { code: "image(picture);" },
-      { showImages: true },
-      codemodeRenderers,
-      { requestRender() {} } as TUI,
-      process.cwd(),
-    );
+    const shell = createToolShell("image(picture);", { id: "replay-1", showImages: true });
     shell.updateResult(result, false);
     assert.ok(
       shell.render(80).join("\n").includes(data),
@@ -74,8 +65,7 @@ test("output action uses the panel background without a separate button fill", (
       [false, false, "toolSuccessBg"],
       [false, true, "toolErrorBg"],
     ] as const) {
-      const shell = new ToolExecutionComponent("codemode", "button", {code: "text(value);"}, {},
-        codemodeRenderers, {requestRender() {}} as TUI, process.cwd());
+      const shell = createToolShell("text(value);", { id: "button" });
       shell.updateResult({content: [{type: "text", text: "output"}], isError}, isPartial);
       for (const width of [20, 80]) {
         const button = shell.render(width).find(line => line.includes("output"))!;
@@ -95,15 +85,9 @@ test("codemode keeps Pi's pending, success, and error backgrounds", () => {
   for (const themeName of ["dark", "light"]) {
     initTheme(themeName, false);
     const create = (custom: boolean) =>
-      new ToolExecutionComponent(
-        "codemode",
-        "status",
-        { code: 'text("output");' },
-        {},
-        custom ? codemodeRenderers : undefined,
-        { requestRender() {} } as TUI,
-        process.cwd(),
-      );
+      createToolShell('text("output");', {
+        id: "status", renderers: custom ? codemodeRenderers : undefined,
+      });
     const native = create(false);
     const custom = create(true);
     const check = () => {
@@ -130,10 +114,7 @@ test("codemode keeps Pi's pending, success, and error backgrounds", () => {
 
 test("CODEMODE has no outer box spacing and pads the tool rows inside its border", () => {
   initTheme("dark", false);
-  const shell = new ToolExecutionComponent(
-    "codemode", "spacing", { code: 'await tools.read({path: "file.ts"});' },
-    {}, codemodeRenderers, { requestRender() {} } as TUI, process.cwd(),
-  );
+  const shell = createToolShell('await tools.read({path: "file.ts"});', { id: "spacing" });
   shell.updateResult({ content: [{ type: "text", text: "output" }], isError: false }, false);
   for (const width of [40, 80, 120]) {
     const lines = shell.render(width).map(stripVTControlCharacters);
@@ -155,10 +136,7 @@ test("header status is color only for pending, success, and error runs", () => {
     for (const [isPartial, isError, color] of [
       [true, false, "warning"], [false, false, "success"], [false, true, "error"],
     ] as const) {
-      const shell = new ToolExecutionComponent(
-        "codemode", "color-status", { code: 'text("output");' }, {},
-        codemodeRenderers, { requestRender() {} } as TUI, process.cwd(),
-      );
+      const shell = createToolShell('text("output");', { id: "color-status" });
       shell.markExecutionStarted();
       assert.doesNotMatch(stripVTControlCharacters(shell.render(80).join("\n")), /Running/);
       shell.updateResult({ content: [{type: "text", text: "output"}], isError }, isPartial);
@@ -176,10 +154,7 @@ test("header status is color only for pending, success, and error runs", () => {
 test("duration and footer controls use the original muted hint color", () => {
   for (const themeName of ["dark", "light"]) {
     initTheme(themeName, false);
-    const shell = new ToolExecutionComponent(
-      "codemode", "matching-colors", {code: 'text("output");'}, {},
-      codemodeRenderers, {requestRender() {}} as TUI, process.cwd(),
-    );
+    const shell = createToolShell('text("output");', { id: "matching-colors" });
     shell.updateResult({
       content: [{type: "text", text: "Script completed\nWall time 0.1 seconds\nOutput:\n"}, {type: "text", text: "output"}],
       isError: false,
@@ -197,10 +172,7 @@ test("compact failed command rows are error-colored while other durations stay m
   initTheme("dark", false);
   for (const name of ["read", "bash", "custom"]) {
     const args = name === "read" ? {path: "file.ts"} : {command: "echo test"};
-    const shell = new ToolExecutionComponent(
-      "codemode", "muted-times", {code: `await tools.${name}(${JSON.stringify(args)});`},
-      {}, codemodeRenderers, {requestRender() {}} as TUI, process.cwd(),
-    );
+    const shell = createToolShell(`await tools.${name}(${JSON.stringify(args)});`, { id: "muted-times" });
     for (const status of ["ok", "error"]) {
       shell.updateResult({
         content: [], details: {calls: [{name, args, status, durationMs: 12}]},
@@ -228,10 +200,7 @@ test("compact failed command rows are error-colored while other durations stay m
 test("header duration uses milliseconds below one second and seconds otherwise", () => {
   initTheme("dark", false);
   for (const [seconds, expected] of [["0", "<50ms"], ["0.0", "<50ms"], ["0.001", "1ms"], ["0.1", "100ms"], ["0.999", "999ms"], ["1", "1.0s"], ["1.25", "1.3s"]]) {
-    const shell = new ToolExecutionComponent(
-      "codemode", "duration-units", {code: 'text("output");'}, {},
-      codemodeRenderers, {requestRender() {}} as TUI, process.cwd(),
-    );
+    const shell = createToolShell('text("output");', { id: "duration-units" });
     shell.updateResult({
       content: [
         {type: "text", text: `Script completed\nWall time ${seconds} seconds\nOutput:\n`},
@@ -247,10 +216,7 @@ test("header duration uses milliseconds below one second and seconds otherwise",
 
 test("an 11ms nested call does not turn rounded total time into a false 0ms", () => {
   initTheme("dark", false);
-  const shell = new ToolExecutionComponent(
-    "codemode", "rounded-wall-time", {code: 'await tools.read({path: "file.ts"});'},
-    {}, codemodeRenderers, {requestRender() {}} as TUI, process.cwd(),
-  );
+  const shell = createToolShell('await tools.read({path: "file.ts"});', { id: "rounded-wall-time" });
   shell.updateResult({
     content: [{type: "text", text: "Script completed\nWall time 0.0 seconds\nOutput:\n"}],
     details: {calls: [{name: "read", args: {path: "file.ts"}, status: "ok", durationMs: 11}]},

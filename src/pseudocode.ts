@@ -1,78 +1,16 @@
 import { parse, tokenizer, type Token } from "acorn";
 import type { CallExpression, Node, Program } from "estree";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { directToolName, propertyKey, sourceText, staticString } from "./tool-syntax.ts";
 
-const targetFields: Record<string, string> = {
-  read: "path", edit: "path", write: "path", ls: "path",
-  bash: "command", powershell: "command", grep: "pattern", find: "pattern",
-};
-const primaryTools = new Set(Object.keys(targetFields));
-
-/** Ordered fields are displayed first and without redundant labels. */
-const displayFields: Record<string, string[]> = {
-  skill_search: ["query"], tool_search: ["query"], getToolGuidance: ["name"],
-  resolve_library_id: ["libraryName", "query"],
-  query_docs: ["libraryId", "query"],
-  mnemosyne_recall: ["query"], mnemosyne_remember: ["content"],
-  mnemosyne_forget: ["id"],
-  web_search: ["query", "queries"], source_check: ["claim"],
-  fetch_content: ["url", "urls"],
-  get_search_content: ["responseId", "findText", "url", "query"],
-  todo: ["action", "subject", "id"],
-  create_goal: ["objective"], get_goal: ["section", "task_id"],
-};
-
-interface DisplayOverride {
-  fields?: string[];
-  hidden?: string[];
-  rawTarget?: boolean;
-  labeled?: string[];
-  redact?: string[];
-}
-const displayOverrides: Record<string, DisplayOverride> = {
-  ...Object.fromEntries(Object.entries(targetFields).map(([name, field]) =>
-    [name, { fields: [field], rawTarget: true }])),
-  read: { fields: ["path"], rawTarget: true, hidden: ["offset", "limit"] },
-  grep: { fields: ["pattern"], rawTarget: true, hidden: ["limit"] },
-  find: { fields: ["pattern"], rawTarget: true, hidden: ["limit"] },
-  ls: { fields: ["path"], rawTarget: true, hidden: ["limit"] },
-  bash: { fields: ["command"], rawTarget: true, hidden: ["timeout"] },
-  powershell: { fields: ["command"], rawTarget: true, hidden: ["timeout"] },
-  edit: { fields: ["path"], rawTarget: true, hidden: ["oldText", "newText", "edits"] },
-  write: { fields: ["path"], rawTarget: true, hidden: ["content"] },
-  skill_search: { fields: ["query"], hidden: ["limit"] },
-  todo: { hidden: ["activeForm"] },
-  web_search: { hidden: ["proxy"] },
-  source_check: { hidden: ["proxy"] },
-  fetch_content: { hidden: ["proxy"], redact: ["auth"] },
-  read_mcp_resource: { fields: ["uri", "server"] },
-  mcp__gitnexus__query: { fields: ["search_query"] },
-  mcp__gitnexus__context: { fields: ["name", "uid"] },
-  mcp__gitnexus__impact: {
-    fields: ["target", "target_uid", "symbol", "name", "direction", "mode"],
-    labeled: ["direction", "mode"],
-  },
-  mcp__gitnexus__explain: { fields: ["target"] },
-  mcp__gitnexus__pdg_query: { fields: ["target", "mode"], labeled: ["mode"] },
-  mcp__gitnexus__rename: {
-    fields: ["symbol_name", "symbol_uid", "new_name", "dry_run"], labeled: ["dry_run"],
-  },
-  mcp__gitnexus__trace: { fields: ["from", "from_uid", "to", "to_uid"] },
-  mcp__gitnexus__cypher: { fields: ["statement"] },
-  mcp__gitnexus__route_map: { fields: ["route"] },
-  mcp__gitnexus__shape_check: { fields: ["route"] },
-  mcp__gitnexus__api_impact: { fields: ["route", "file", "method"], labeled: ["method"] },
-};
+import { isPrimaryTool, preferredFields, toolDisplay } from "./tool-display.ts";
 
 type MarkTool = (name: string, command?: boolean, target?: string) => string;
 
 /** Default for every tool without a more useful command-specific layout. */
-function defaultToolCall(node: CallExpression, code: string, name: string, mark: MarkTool,
-  override: DisplayOverride = {}): string {
-  const source = (node: Node) => {
-    const range = node as Node & { start: number; end: number };
-    return code.slice(range.start, range.end).replace(/\s+/g, " ").trim();
-  };
+function formatToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
+  const override = toolDisplay(name);
+  const source = (node: Node) => sourceText(node, code).replace(/\s+/g, " ").trim();
   const value = (node: Node, depth = 0): string => {
     if (depth > 3) return "…";
     if (node.type === "Literal" && typeof node.value === "string")
@@ -102,37 +40,25 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
   let rawTarget = false;
   let identityTarget: string | undefined;
   if (node.arguments.length === 1 && argument?.type === "ObjectExpression") {
-    const keyOf = (node: Node): string | undefined =>
-      node.type === "Property" && !node.computed && !node.method && node.kind === "init"
-        ? node.key.type === "Identifier" ? node.key.name
-          : node.key.type === "Literal" && typeof node.key.value === "string" ? node.key.value
-          : undefined : undefined;
     // Spreads, computed keys, and duplicates can change the actual target.
-    const keys = argument.properties.map(keyOf);
+    const keys = argument.properties.map(propertyKey);
     const safe = keys.every(key => key !== undefined) && new Set(keys).size === keys.length;
-    const preferred = safe ? override.fields ?? (Object.hasOwn(displayFields, name) ? displayFields[name]! : []) : [];
-    const targets = preferred.flatMap(key => argument.properties.filter(p => keyOf(p) === key));
+    const preferred = safe ? preferredFields(override) : [];
+    const targets = preferred.flatMap(key => argument.properties.filter(p => propertyKey(p) === key));
     const rest = argument.properties.filter(p => !targets.includes(p) &&
-      !override.hidden?.includes(keyOf(p)!));
+      !override.hidden?.includes(propertyKey(p)!));
     const visible = [...targets, ...rest];
     const shown = visible.slice(0, 3);
     args = shown.map(p => {
       if (targets.includes(p) && p.type === "Property") {
-        const key = keyOf(p);
+        const key = propertyKey(p);
         if (override.labeled?.includes(key!)) return value(p);
         if (override.rawTarget) {
           rawTarget = true;
           const target = p.value;
-          if (target.type === "Literal" && typeof target.value === "string")
-            identityTarget = target.value;
-          else if (target.type === "TemplateLiteral" && target.expressions.length === 0)
-            identityTarget = target.quasis.map(part => part.value.cooked ?? part.value.raw).join("");
-          const range = target as Node & { start: number; end: number };
-          const displayTarget = (target.type === "Literal" && typeof target.value === "string"
-            ? target.value
-            : target.type === "TemplateLiteral" && target.expressions.length === 0
-              ? target.quasis.map(part => part.value.cooked ?? part.value.raw).join("")
-              : code.slice(range.start, range.end)).replace(/\s+/g, " ").trim();
+          identityTarget = staticString(target);
+          const displayTarget = (identityTarget ?? sourceText(target, code))
+            .replace(/\s+/g, " ").trim();
           return displayTarget;
         }
         if (name === "todo" && key === "action" && p.value.type === "Literal" &&
@@ -145,20 +71,20 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
       }
       return value(p);
     }).concat(visible.length > shown.length ? ["…"] : []).join(" · ");
-    if (name === "todo" && targets.length > 1 && keyOf(targets[0]!) === "action") {
+    if (name === "todo" && targets.length > 1 && propertyKey(targets[0]!) === "action") {
       // The action and task target form one command.
       args = args.replace(" · ", " ");
     }
     if (name === "ask_user_question" && safe) {
-      const questions = argument.properties.find(p => keyOf(p) === "questions");
+      const questions = argument.properties.find(p => propertyKey(p) === "questions");
       if (questions?.type === "Property" && questions.value.type === "ArrayExpression") {
         const entries = questions.value.elements;
         const texts = entries.map(entry => {
           if (entry?.type !== "ObjectExpression") return undefined;
-          const entryKeys = entry.properties.map(keyOf);
+          const entryKeys = entry.properties.map(propertyKey);
           if (entryKeys.some(key => key === undefined) || new Set(entryKeys).size !== entryKeys.length)
             return undefined;
-          const field = entry.properties.find(p => keyOf(p) === "question");
+          const field = entry.properties.find(p => propertyKey(p) === "question");
           return field?.type === "Property" ? value(field.value) : undefined;
         });
         if (texts.every(text => text !== undefined)) {
@@ -171,12 +97,6 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
     }
   } else args = items(node.arguments, 0, " · ");
   return mark(name, rawTarget, identityTarget) + (args ? " " + args : "");
-}
-
-/** All tool layouts use the default formatter with display-only overrides. */
-function formatToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
-  return defaultToolCall(node, code, name, mark,
-    Object.hasOwn(displayOverrides, name) ? displayOverrides[name] : undefined);
 }
 
 // Codemode globals are meaningful operations, not ordinary result variables.
@@ -260,20 +180,28 @@ function syntaxPseudocode(code: string, mark: MarkTool): string {
         end: summary !== undefined
           ? scanned[close!]!.end : property.end,
         text: summary !== undefined
-          ? summary : primaryTools.has(code.slice(property.start, property.end))
+          ? summary : isPrimaryTool(code.slice(property.start, property.end))
             ? code.slice(property.start, property.end) : mark(code.slice(property.start, property.end)),
       });
     }
-    if (
-      token.type.keyword === "const" &&
-      scanned[index + 1]?.type.label === "name" &&
-      scanned[index + 2]?.type.label === "="
-    ) {
-      replacements.push({
-        start: token.start,
-        end: scanned[index + 3]?.start ?? scanned[index + 2]!.end,
-        text: "",
-      });
+    if (["const", "let", "var"].includes(code.slice(token.start, token.end)) &&
+        (token.type.keyword || token.type.label === "name")) {
+      let depth = 0;
+      for (let cursor = index + 1; cursor < scanned.length; cursor++) {
+        const current = scanned[cursor]!;
+        const label = current.type.label;
+        if (["[", "{"].includes(label)) depth++;
+        else if (["]", "}"].includes(label)) depth--;
+        if (depth < 0 || (depth === 0 && [";", "in", "of"].includes(label))) break;
+        if (depth === 0 && label === "=") {
+          replacements.push({
+            start: token.start,
+            end: scanned[cursor + 1]?.start ?? current.end,
+            text: "",
+          });
+          break;
+        }
+      }
     }
     if (
       token.type.label !== "name" ||
@@ -334,10 +262,7 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
       const entry = declaration.declarations[0]!;
       if (entry.id.type !== "Identifier" || entry.init?.type !== "ArrayExpression" ||
           !entry.init.elements.length) continue;
-      const commands = entry.init.elements.map(element =>
-        element?.type === "Literal" && typeof element.value === "string" ? element.value
-          : element?.type === "TemplateLiteral" && !element.expressions.length
-            ? element.quasis.map(part => part.value.cooked ?? part.value.raw).join("") : undefined);
+      const commands = entry.init.elements.map(element => element ? staticString(element) : undefined);
       if (!commands.every((command): command is string => command !== undefined)) continue;
       const expression = statement.expression.type === "AwaitExpression"
         ? statement.expression.argument : statement.expression;
@@ -364,11 +289,9 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
           output?.type !== "ExpressionStatement" || output.expression.type !== "CallExpression" ||
           output.expression.callee.type !== "Identifier" || output.expression.callee.name !== "text") continue;
       const call = result.declarations[0].init.argument;
-      if (call.type !== "CallExpression" || call.optional ||
-          call.callee.type !== "MemberExpression" || call.callee.optional || call.callee.computed ||
-          call.callee.object.type !== "Identifier" || call.callee.object.name !== "tools" ||
-          call.callee.property.type !== "Identifier" ||
-          !["bash", "powershell"].includes(call.callee.property.name) ||
+      if (call.type !== "CallExpression") continue;
+      const tool = directToolName(call);
+      if (!tool || !["bash", "powershell"].includes(tool) ||
           call.arguments.length !== 1 || call.arguments[0]?.type !== "ObjectExpression") continue;
       const properties = call.arguments[0].properties;
       const keys = properties.map(property => property.type === "Property" &&
@@ -395,7 +318,7 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
       };
       if (!output.expression.arguments.every(pureOutput)) continue;
       batches.set(statement.expression, { binding: entry.id.name, commands,
-        tool: call.callee.property.name, params: callback.params.map(param => param.name), output });
+        tool, params: callback.params.map(param => param.name), output });
       batchDeclarations.set(entry, commands.length);
     }
     let budget = 2000;
@@ -441,10 +364,8 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
             return JSON.stringify(node.value);
           }
           return JSON.stringify(node.value) ?? String(node.value);
-        case "TemplateLiteral": {
-          const source = node as Node & { start: number; end: number };
-          return code.slice(source.start, source.end);
-        }
+        case "TemplateLiteral":
+          return sourceText(node, code);
         case "ExpressionStatement": {
           const expression = node.expression;
           if (expression.type === "CallExpression" &&
@@ -468,26 +389,21 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
             return node.arguments.length === 1 &&
               node.arguments[0]?.type === "Identifier" &&
               !codemodeHelpers.has(node.arguments[0].name) ? "" : args;
-          const helper = node.callee.type === "Identifier" ? node.callee.name
-            : node.callee.type === "MemberExpression" && !node.callee.computed &&
-              node.callee.object.type === "Identifier" && node.callee.object.name === "tools" &&
-              node.callee.property.type === "Identifier" ? node.callee.property.name : undefined;
+          const tool = directToolName(node);
+          const helper = node.callee.type === "Identifier" ? node.callee.name : tool;
           if (helper === "describeTool" || helper === "searchTools") {
             const value: Node | undefined = node.arguments[0];
             if (value?.type === "Literal" && typeof value.value === "string")
               return helper + " " + value.value;
           }
-          if (node.callee.type === "MemberExpression" && !node.callee.computed &&
-              node.callee.object.type === "Identifier" && node.callee.object.name === "tools" &&
-              node.callee.property.type === "Identifier")
-            return formatToolCall(node, code, node.callee.property.name, mark);
+          if (tool) return formatToolCall(node, code, tool, mark);
           const member = node.callee.type === "MemberExpression" ? node.callee : undefined;
           if (member?.optional) throw new Error("Optional member");
           const object = member ? child(member.object) : undefined;
           const name = member ? object + (member.computed
             ? "[" + child(member.property) + "]" : "." + child(member.property))
             : child(node.callee);
-          if (primaryTools.has(name.toLowerCase()))
+          if (isPrimaryTool(name.toLowerCase()))
             return formatToolCall(node, code, name.toLowerCase(), mark);
           if (
             node.callee.type === "FunctionExpression" ||
@@ -509,13 +425,9 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
             child(declaration),
           ).filter(Boolean).join("\n");
         case "VariableDeclarator": {
-          const binding = child(node.id);
           const count = batchDeclarations.get(node);
-          if (count !== undefined) return binding + " ← [" + count + " shell commands]";
-          return node.init
-            ? binding + " ← " + describe(node.init, depth + 1,
-                available - visibleWidth(binding + " ← "))
-            : "declare " + binding;
+          if (count !== undefined) return "[" + count + " shell commands]";
+          return node.init ? child(node.init) : "";
         }
         case "ArrayExpression":
           return group(node.elements.map(item => item ? child(item) : ""), "[", "]",
@@ -628,10 +540,8 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
           return node.operator + " " + child(node.argument);
         case "EmptyStatement":
           return "";
-        default: {
-          const source = node as Node & { start: number; end: number };
-          return syntaxPseudocode(code.slice(source.start, source.end), mark);
-        }
+        default:
+          return syntaxPseudocode(sourceText(node, code), mark);
       }
     };
     // Validate the whole script and keep all pseudocode lines.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { theme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+import { hostTheme as theme } from "../support/host.ts";
 import { Screen } from "../../src/screen.ts";
 import { model } from "../../src/model.ts";
 
@@ -47,7 +47,7 @@ test("searchTools shows running status without a nested call record", () => {
     data, 'const results = await searchTools("read bash"); text(results);',
     false, true, theme,
   ).render(120).join("\n"));
-  assert.match(screen, /… results ← searchTools read bash/);
+  assert.match(screen, /… searchTools read bash/);
 });
 
 test("searchTools uses recorded success and error states", () => {

@@ -9,7 +9,7 @@ import {
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import type { Model } from "./model.ts";
-import { Screen } from "./screen.ts";
+import { FormattedOutput } from "./formatted-output.ts";
 
 /** One run, all formatted output in order. No output switching. */
 export class OutputViewer implements Component {
@@ -22,11 +22,7 @@ export class OutputViewer implements Component {
     private theme: Theme,
     private close: () => void,
   ) {
-    const screen = new Screen(data, "", false, false, theme);
-    this.scroll = new ScrollView({
-      render: width => screen.renderFormattedOutput(width),
-      invalidate: () => screen.invalidate(),
-    }, {
+    this.scroll = new ScrollView(new FormattedOutput(data, theme), {
       scrollbar: "hidden",
       overscroll: "contain",
     });

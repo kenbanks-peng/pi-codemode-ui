@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
 import { stripVTControlCharacters } from "node:util";
 import {
   initTheme,
   Theme,
   type ToolRenderers,
-  type ExtensionAPI,
-  type ToolRendererResolver,
 } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import extension from "../../src/index.ts";
+import { registeredRenderers as renderer, loadFixture, plainLines as plain, hostTheme } from "../support/host.ts";
 
 type Context = Parameters<NonNullable<ToolRenderers["renderCall"]>>[2];
 export const context = (overrides: Partial<Context> = {}): Context => ({
@@ -28,24 +25,10 @@ export const context = (overrides: Partial<Context> = {}): Context => ({
   isError: false,
   ...overrides,
 });
-function renderer() {
-  let resolver: ToolRendererResolver | undefined;
-  extension({
-    on() { return () => {}; },
-    registerShortcut() {},
-    registerToolRenderer(value: ToolRendererResolver) {
-      resolver = value;
-    },
-  } as unknown as ExtensionAPI);
-  assert.ok(resolver);
-  return resolver("codemode", () => undefined)!;
-}
-import { theme as hostTheme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 function theme(): Theme {
   initTheme("dark", false);
   return hostTheme;
 }
-const plain = (lines: string[]) => stripVTControlCharacters(lines.join("\n"));
 function render(value: unknown, width = 72, expanded = false) {
   return renderer().renderResult!(
     value as never,
@@ -72,9 +55,7 @@ test("receiving script keeps the panel border and padding", () => {
 });
 
 test("truncation notice stays out of compact view without changing raw output", () => {
-  const sample = JSON.parse(
-    readFileSync(new URL("../fixtures/truncated.json", import.meta.url), "utf8"),
-  );
+  const sample = loadFixture("truncated");
   const before = structuredClone(sample.result);
   const compact = plain(render(sample.result, 100));
   assert.doesNotMatch(compact, /0123456789/);
@@ -88,9 +69,7 @@ test("truncation notice stays out of compact view without changing raw output", 
 });
 
 test("compact visual contract: header stats and footer controls in one panel", () => {
-  const sample = JSON.parse(
-    readFileSync(new URL("../fixtures/example.json", import.meta.url), "utf8"),
-  );
+  const sample = loadFixture("example");
   const before = structuredClone(sample.result);
   const lines = render(sample.result);
   const screen = plain(lines);
@@ -126,7 +105,7 @@ test("all scripts show uncapped pseudocode, including syntax outside the main co
   assert.doesNotMatch(screen, /Pseudocode/);
   assert.match(screen, /line-11/);
   assert.match(screen, /`hello \$\{name\}`/);
-  assert.match(screen, /message ←/);
+  assert.doesNotMatch(screen, /message ←/);
 });
 
 test("pseudocode fallback keeps all lines for complex, large, and incomplete scripts", () => {
@@ -208,9 +187,9 @@ test("pseudocode keeps helper calls and hides text wrappers in parsed and fallba
       assert.match(screen, /searchTools\("edit"\)/);
       assert.doesNotMatch(screen, /\bmatches\b/);
     } else {
-      assert.match(screen, /matches ← searchTools read/);
+      assert.match(screen, /searchTools read/);
       assert.match(screen, /searchTools edit/);
-      assert.equal((screen.match(/\bmatches\b/g) ?? []).length, 1);
+      assert.doesNotMatch(screen, /\bmatches\b/);
     }
     assert.doesNotMatch(screen, /\bconst\b|text\(/);
   }
@@ -859,7 +838,7 @@ test("parallel shell batches show headings and each recorded duration once", () 
   for (const width of [48, 72, 120]) {
     const lines = component(false).render(width);
     const screen = plain(lines);
-    assert.match(screen, /commands ← \[2 shell commands\]/);
+    assert.match(screen, /\[2 shell commands\]/);
     assert.match(screen, /parallel commands.map\(command, index\)/);
     assert.match(screen, /✓\s+bash · Repository summary\s+25ms/);
     assert.match(screen, /✓\s+bash · Source file sizes\s+26ms/);

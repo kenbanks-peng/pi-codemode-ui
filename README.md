@@ -21,7 +21,7 @@ Use codemode in Pi as usual. The extension formats its results automatically.
 ## Pseudocode layout
 
 Compact view uses parsed JavaScript structure to format nested arrays, objects,
-calls, and callback blocks. It keeps variable assignments but hides standalone
+calls, and callback blocks. It hides variable declaration prefixes and standalone
 `store()` and `load()` calls. Calls whose results are used remain visible.
 It shows `try` / `catch` / `finally` on separate lines. Long calls, method chains,
 operators, and conditional expressions wrap at syntax boundaries as the panel
@@ -78,3 +78,15 @@ fetch_content "https://example.com" · mode: "raw"
 Tools without a verified override continue to use the default formatter.
 
 Single-word string targets omit quotation marks; multi-word targets keep them.
+
+## Development
+
+Run `npm run check` for type checking, tests, a build, and package-load checks.
+
+- `src/tool-display.ts` owns tool targets and compact display options.
+- `src/call-status.ts` and `src/compact-call.ts` share recorded status and command-row layout.
+- `src/screen.ts` owns the run panel and source-call matching.
+- `src/formatted-output.ts` and `src/formatted-value.ts` format output without panel controls.
+- `tests/support/host.ts` shares host setup, fixture loading, and text captures with preview scripts.
+
+Execution and session records remain owned by Pi.
