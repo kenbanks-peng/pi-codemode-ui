@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { writeFileSync } from "node:fs";
 import { createToolShell, loadFixture, renderedText } from "../tests/support/host.ts";
 
 const captures = [

@@ -1,10 +1,10 @@
+import type { TUI } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
-import type { TUI } from "@earendil-works/pi-tui";
 
 // Set PI_UI_HOST to a Pi package directory to verify a separately installed host.
 const host = process.env.PI_UI_HOST;
@@ -12,26 +12,16 @@ const { discoverAndLoadExtensions, initTheme, ToolExecutionComponent } = host
   ? await import(pathToFileURL(resolve(host, "dist/index.js")).href)
   : await import("@earendil-works/pi-coding-agent");
 const root = resolve(import.meta.dirname, "..");
-const manifest = JSON.parse(
-  await readFile(resolve(root, "package.json"), "utf8"),
-);
+const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 const temporary = await mkdtemp(resolve(tmpdir(), "pi-ui-smoke-"));
 try {
   for (const entry of [...manifest.pi.extensions, "./dist/index.js"]) {
-    const loaded = await discoverAndLoadExtensions(
-      [resolve(root, entry)],
-      temporary,
-      temporary,
-    );
+    const loaded = await discoverAndLoadExtensions([resolve(root, entry)], temporary, temporary);
     assert.deepEqual(loaded.errors, []);
     assert.equal(loaded.extensions.length, 1);
     const extension = loaded.extensions[0];
     assert.equal(extension.tools.size, 0, "must not register or replace tools");
-    assert.equal(
-      extension.handlers.size,
-      2,
-      "only UI session lifecycle handlers",
-    );
+    assert.equal(extension.handlers.size, 2, "only UI session lifecycle handlers");
     assert.equal(extension.toolRenderers.length, 1);
     const resolveRenderer = extension.toolRenderers[0];
     const renderers = resolveRenderer("codemode", () => undefined);
@@ -59,17 +49,13 @@ try {
         root,
       );
       shell.updateResult(result, false);
-      assert.ok(
-        stripVTControlCharacters(shell.render(200).join("\n")).includes("output"),
-      );
+      assert.ok(stripVTControlCharacters(shell.render(200).join("\n")).includes("output"));
       shell.setExpanded(true);
       const expanded = stripVTControlCharacters(shell.render(200).join("\n"));
       for (const line of raw!.split("\n")) assert.ok(expanded.includes(line));
       assert.deepEqual(result, before);
     }
-    const sample = JSON.parse(
-      await readFile(resolve(root, "tests/fixtures/example.json"), "utf8"),
-    );
+    const sample = JSON.parse(await readFile(resolve(root, "tests/fixtures/example.json"), "utf8"));
     const realistic = new ToolExecutionComponent(
       "codemode",
       "real-output",
@@ -92,9 +78,7 @@ try {
       resolveRenderer("read", () => sentinel),
       sentinel,
     );
-    console.log(
-      `PASS Pi package load: ${entry}${host ? ` (host ${host})` : ""}`,
-    );
+    console.log(`PASS Pi package load: ${entry}${host ? ` (host ${host})` : ""}`);
   }
 } finally {
   await rm(temporary, { recursive: true, force: true });

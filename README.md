@@ -83,10 +83,16 @@ Single-word string targets omit quotation marks; multi-word targets keep them.
 
 Run `npm run check` for type checking, tests, a build, and package-load checks.
 
-- `src/tool-display.ts` owns tool targets and compact display options.
-- `src/call-status.ts` and `src/compact-call.ts` share recorded status and command-row layout.
-- `src/screen.ts` owns the run panel and source-call matching.
-- `src/formatted-output.ts` and `src/formatted-value.ts` format output without panel controls.
-- `tests/support/host.ts` shares host setup, fixture loading, and text captures with preview scripts.
+See [Code layout](docs/code-layout.md) for the folder map, file responsibilities,
+functions, and change rules.
+
+- `src/run/` parses results and owns normalized data.
+- `src/tools/` owns shared tool display rules.
+- `src/pseudocode/` formats source and tracks tool-call positions.
+- `src/terminal/` handles safe text, width, and border style.
+- `src/output/` formats output and owns its viewer and session retention.
+- `src/ui/` adapts Pi renderers and draws the run panel.
+- `tests/` groups checks by responsibility; `tests/support/` shares setup.
+- `scripts/` contains preview, capture, replay, and package-load tools.
 
 Execution and session records remain owned by Pi.

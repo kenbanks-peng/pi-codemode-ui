@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createCodemodeRenderers } from "./renderer.ts";
-import { OutputController } from "./output.ts";
+import { OutputController } from "./output/controller.ts";
+import { createCodemodeRenderers } from "./ui/renderers.ts";
 
 /** Display only: execution, messages, and session records remain owned by Pi. */
 export default function extension(pi: ExtensionAPI): void {
@@ -12,7 +12,5 @@ export default function extension(pi: ExtensionAPI): void {
     description: "View latest codemode output",
     handler: (ctx) => output.open(undefined, ctx),
   });
-  pi.registerToolRenderer((name, next) =>
-    name === "codemode" ? renderers : next(),
-  );
+  pi.registerToolRenderer((name, next) => (name === "codemode" ? renderers : next()));
 }

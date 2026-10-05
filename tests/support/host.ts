@@ -1,15 +1,15 @@
-import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { stripVTControlCharacters } from "node:util";
 import {
   ToolExecutionComponent,
   type ExtensionAPI,
-  type ToolRenderers,
   type ToolRendererResolver,
+  type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { stripVTControlCharacters } from "node:util";
 import extension from "../../src/index.ts";
-import { codemodeRenderers } from "../../src/renderer.ts";
+import { codemodeRenderers } from "../../src/ui/renderers.ts";
 export { theme as hostTheme } from "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 interface ShellOptions {
