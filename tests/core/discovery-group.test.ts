@@ -67,7 +67,7 @@ test("searchTools uses recorded success and error states", () => {
 test("generic tools receive status and duration without a name allowlist", () => {
   initTheme("dark", false);
   for (const name of ["skill_search", "mcp__provider__lookup", "futureTool42"]) {
-    for (const [status, symbol] of [["ok", "✓"], ["error", "✗"], ["running", "…"], ["cancelled", "–"], ["unknown", "?"]]) {
+    for (const [status, symbol] of [["ok", "✓"], ["error", "✗"], ["running", "…"], ["cancelled", "–"], ["unknown", ""]]) {
       const code = 'text(await tools.' + name + '({query: "read bash"}));';
       const data = model({content: [], details: {calls: [
         {name, args: {query: "read bash"}, status, durationMs: 12},

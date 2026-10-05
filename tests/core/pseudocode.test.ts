@@ -70,9 +70,21 @@ test("default tool calls keep labels, values, and expressions without call synta
   }
 });
 
-test("default tool summaries bound long values and retain complete expanded source separately", () => {
+test("shell command summaries retain content and target identity for width-aware rendering", () => {
+  for (const name of ["bash", "powershell"]) {
+    const command = "node " + "x".repeat(200);
+    const code = "tools." + name + "(" + JSON.stringify({command}) + ")";
+    for (const source of [code, "try {\n" + code]) {
+      const summary = summarize(source);
+      assert.ok(summary.text.includes(name + " " + command));
+      assert.equal(summary.calls[0]?.target, command);
+    }
+  }
+});
+
+test("default tool summaries retain long values for width-aware rendering", () => {
   const code = 'tools.custom({query: "' + "x".repeat(200) + '"})';
-  assert.equal(pseudocode(code), 'custom query: "' + "x".repeat(77) + '…"');
+  assert.equal(pseudocode(code), 'custom query: "' + "x".repeat(200) + '"');
 });
 
 test("tool metadata follows display positions, not name-like strings or other objects", () => {
@@ -96,16 +108,30 @@ test("shared target overrides work in parsed and syntax fallback paths", () => {
   }
 });
 
+test("primary target identity is separate from display options in every render path", () => {
+  const code = 'tools.read({path: "src/index.ts", limit: 120, offset: 2});';
+  for (const prefix of ["", "try {\n", "/* large */".repeat(5000) + "\n"]) {
+    const summary = summarize(prefix + code);
+    assert.deepEqual(summary.calls.map(call => ({
+      name: call.name, command: call.command, target: call.target,
+    })), [{name: "read", command: true, target: "src/index.ts"}]);
+    assert.doesNotMatch(summary.text, /limit:|offset:/);
+    const call = summary.calls[0]!;
+    assert.equal(summary.text.split("\n")[call.line]!.slice(call.column,
+      call.column + call.name.length), "read");
+  }
+});
+
 test("display overrides retain options and hide only selected fields", () => {
   const cases = [
     ['tools.read({limit: 100, path: "src/index.ts", offset: 2})',
-      'read src/index.ts · limit: 100 · offset: 2'],
-    ['tools.grep({pattern: "renderCall", limit: 20})', 'grep renderCall · limit: 20'],
-    ['tools.find({pattern: "renderer", limit: 3})', 'find renderer · limit: 3'],
-    ['tools.ls({path: "src", limit: 10})', 'ls src · limit: 10'],
-    ['tools.bash({command: "npm test", timeout: 60})', 'bash npm test · timeout: 60'],
+      'read src/index.ts'],
+    ['tools.grep({pattern: "renderCall", limit: 20})', 'grep renderCall'],
+    ['tools.find({pattern: "renderer", limit: 3})', 'find renderer'],
+    ['tools.ls({path: "src", limit: 10})', 'ls src'],
+    ['tools.bash({command: "npm test", timeout: 60})', 'bash npm test'],
     ['tools.powershell({command: "Get-ChildItem", timeout: 60})',
-      'powershell Get-ChildItem · timeout: 60'],
+      'powershell Get-ChildItem'],
     ['tools.write({content: "large payload", path: "file.txt", mode: "append"})',
       'write file.txt · mode: "append"'],
     ['tools.edit({path: "file.txt", oldText: "old", newText: "new", edits: []})',
@@ -125,7 +151,7 @@ test("display overrides retain options and hide only selected fields", () => {
 
 test("escaped source text cannot create tool metadata", () => {
   const summary = summarize(String.raw`tools.read({path: "\u0000tool0\u0000custom"}); tools.custom({});`);
-  assert.deepEqual(summary.calls.map(call => call.name), ["custom"]);
+  assert.deepEqual(summary.calls.map(call => call.name), ["read", "custom"]);
 });
 
 test("semantic overrides prioritize targets and keep supplied options", () => {

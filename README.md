@@ -41,10 +41,19 @@ custom enabled: true · count: 3
 
 The default keeps argument labels and dynamic expressions. It shows up to three
 arguments, fields, or array items, and marks omitted content with `…`. Long
-values and deeply nested values are shortened. Calls with no arguments show only
+values are retained until display; deeply nested values are shortened. Calls with no arguments show only
 the tool name.
 
 Small overrides keep file paths, shell commands, and search patterns concise.
+Compact primary calls hide read offsets, result limits, and shell timeouts.
+These fields remain in expanded code and recorded arguments.
+Shell commands use one available row with `…` for omitted content. Status and
+execution time are included in the width budget. File paths wrap in full.
+`preview(width, content, maxLines)` handles text wrapping and truncation in one
+place. It counts terminal cells, supports ANSI styles, and accepts `Infinity`
+for complete content. Output text previews use eight terminal rows.
+Truncated host arguments are matched to full source targets only when the match
+is unique, so recorded status and duration stay on the source call row.
 The same formatter handles complete calls in large or incomplete scripts.
 Expanded view keeps the full original code and recorded arguments.
 

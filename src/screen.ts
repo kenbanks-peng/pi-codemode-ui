@@ -7,12 +7,12 @@ import {
   truncateToWidth,
   rgbColor,
   visibleWidth,
-  wrapTextWithAnsi,
   type Component,
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { isDiscovery, record, safeText, type Call, type Model } from "./model.ts";
 import { summarize, type ToolSummary } from "./pseudocode.ts";
+import { preview } from "./preview.ts";
 
 const formatDuration = (ms: number): string =>
   ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : Math.round(ms) + "ms";
@@ -75,6 +75,33 @@ function tree(value: unknown): string[] | undefined {
   return lines;
 }
 
+/** Compare an incomplete host JSON string with a full source literal.
+ * Do not decode a cut escape or treat a complete/malformed object as a prefix.
+ */
+function targetPrefixMatches(call: Call, target: string): boolean {
+  if (call.target !== call.args) return false;
+  try { JSON.parse(call.args); return false; } catch { /* host preview may be cut */ }
+  const field = ({read: "path", edit: "path", write: "path", ls: "path",
+    bash: "command", powershell: "command", grep: "pattern", find: "pattern"
+  } as Record<string, string>)[call.name.toLowerCase()];
+  if (!field) return false;
+  const retained = call.args.replace(/(?:\.{3}|…)$/, "");
+  // The host can cut a later option after the target string has closed.
+  // Match the intact target without parsing or repairing the remaining JSON.
+  const complete = retained.match(
+    /^\s*\{\s*"(path|command|pattern)"\s*:\s*("(?:\\.|[^"\\])*")\s*[,}]/,
+  );
+  if (complete?.[1] === field) {
+    try { return JSON.parse(complete[2]!) === target; }
+    catch { return false; }
+  }
+  const prefix = retained.match(
+    /^\s*\{\s*"(path|command|pattern)"\s*:\s*("(?:(?:\\.)|[^"\\])*(?:\\)?)$/,
+  );
+  return prefix?.[1] === field && prefix[2]!.length >= 9 &&
+    JSON.stringify(target).startsWith(prefix[2]!);
+}
+
 export class Screen implements Component {
   private summary: ToolSummary | undefined;
   private summaryWidth = -1;
@@ -133,7 +160,7 @@ export class Screen implements Component {
     };
     let outputColor: ThemeColor = "toolOutput";
     const row = (text = "", token: ThemeColor = outputColor, styled = false) => {
-      for (const part of wrapTextWithAnsi(styled ? text : safeText(text), w)) {
+      for (const part of preview(w, styled ? text : safeText(text), Infinity)) {
         const fitted = truncateToWidth(part, w, "");
         if (outputOnly) {
           lines.push(fg(token, fitted));
@@ -180,18 +207,9 @@ export class Screen implements Component {
     };
     const textBody = (text: string, all = false, indent = "") => {
       all ||= outputOnly;
-      const logical = text.split("\n");
-      // Limit by complete source lines, not by wrapped terminal rows.
-      for (const line of logical.slice(0, all ? undefined : 8)) {
-        const preview = all ? line : line.slice(0, 1000);
-        for (const part of wrapTextWithAnsi(
-          safeText(preview),
-          Math.max(1, w - indent.length),
-        ))
-          row(indent + part);
-        if (!all) hidden(line.length - 1000, "characters");
-      }
-      if (!all) hidden(logical.length - 8, "lines");
+      for (const part of preview(Math.max(1, w - visibleWidth(indent)),
+        safeText(text), all ? Infinity : 8))
+        row(indent + part);
     };
     const fields = (entries: [string, unknown][], depth = 0) => {
       if (!entries.length) {
@@ -224,7 +242,7 @@ export class Screen implements Component {
         } else {
           const prefix = name + " ".repeat(column - visibleWidth(name) + 2);
           const available = w - visibleWidth(prefix);
-          const parts = wrapTextWithAnsi(safeText(value), available);
+          const parts = preview(available, safeText(value), outputOnly ? Infinity : 8);
           parts.forEach((part, j) =>
             row((j ? " ".repeat(visibleWidth(prefix)) : prefix) + part),
           );
@@ -251,12 +269,8 @@ export class Screen implements Component {
           });
           groups.set(provider, entries);
         }
-        const clip = (text: string, size: number, words = false) => {
-          if (visibleWidth(text) <= size) return text;
-          if (size < 3) return truncateToWidth(text, size, "").replace(/\x1b\[[0-9;]*m/g, "");
-          let prefix = truncateToWidth(text, size - 3, "").replace(/\x1b\[[0-9;]*m/g, "");
-          if (words && prefix.includes(" ")) prefix = prefix.slice(0, prefix.lastIndexOf(" "));
-          return prefix.trimEnd() + "...";
+        const clip = (text: string, size: number) => {
+          return preview(size, text.replace(/\s+/g, " "), 1)[0] ?? "";
         };
         for (const [provider, entries] of groups) {
           if (provider) {
@@ -271,7 +285,7 @@ export class Screen implements Component {
           for (const tool of entries) {
             const name = clip(tool.name, column);
             const available = w - column - 2;
-            const description = available >= 4 ? clip(tool.description, available, true) : "";
+            const description = available >= 4 ? clip(tool.description, available) : "";
             row(fg("accent", name) +
               (description ? " ".repeat(column - visibleWidth(name) + 2) + description : ""),
               "toolOutput", true);
@@ -456,7 +470,7 @@ export class Screen implements Component {
               string,
               string
             >
-          )[c.status] ?? "?";
+          )[c.status] ?? "";
         const color =
           c.status === "ok"
             ? "success"
@@ -606,14 +620,14 @@ export class Screen implements Component {
         }
       }
       source = grouped.join("\n");
-      const compactOffsets = new Map<number, string>();
+      const compactOffsets = new Map<number, ToolSummary["calls"][number]>();
       let lineOffset = 0;
       grouped.forEach((line, index) => {
         for (const call of compactByLine.get(index) ?? [])
-          compactOffsets.set(lineOffset + call.column, call.name);
+          compactOffsets.set(lineOffset + call.column, call);
         lineOffset += line.length + 1;
       });
-      const toolNames = [...new Set(compactOffsets.values())].sort((a, b) => b.length - a.length)
+      const toolNames = [...new Set([...compactOffsets.values()].map(call => call.name))].sort((a, b) => b.length - a.length)
         .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
       const legacyPattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*|\btools\.[A-Za-z_$][\w$]*(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?= [^\n])|^  (?:oldText|newText):/gm;
       const legacyOffsets = new Set([...source.matchAll(legacyPattern)].map(match => match.index));
@@ -621,7 +635,8 @@ export class Screen implements Component {
         (toolNames.length ? "|" + toolNames.join("|") : ""), "gm");
       const styled = source.replace(pattern,
         (displayName, offset: number) => {
-          const compactName = compactOffsets.get(offset);
+          const compactCall = compactOffsets.get(offset);
+          const compactName = compactCall?.name;
           const generic = compactName !== undefined || displayName.startsWith("tools.");
           const match = compactName ?? (generic ? displayName.slice(6) : displayName);
           // A default tool name is valid only at a formatter-provided position.
@@ -635,17 +650,25 @@ export class Screen implements Component {
           const editPath = !compactName && (match === "edit" || match === "read") && source[offset + match.length] === " "
             ? source.slice(offset + match.length + 1).split("\n")[0]
             : undefined;
-          const call = groups.get(source.slice(0, offset).split("\n").length - 1) ?? this.data.calls.find((call) =>
-            !used.has(call) && call.name.toLowerCase() === match.toLowerCase() &&
-            (editPath === undefined || call.target === editPath),
-          );
+          const candidates = this.data.calls.filter(call =>
+            !used.has(call) && call.name.toLowerCase() === match.toLowerCase());
+          let call = groups.get(lineIndex) ?? candidates.find(call =>
+            compactCall?.target !== undefined ? call.target === compactCall.target
+              : editPath === undefined || call.target === editPath);
+          if (!call && compactCall?.target !== undefined) {
+            const target = compactCall.target;
+            const partial = candidates.filter(call => targetPrefixMatches(call, target) &&
+              formatted.calls.filter(sourceCall => sourceCall.name.toLowerCase() === match.toLowerCase() &&
+                sourceCall.target !== undefined && targetPrefixMatches(call, sourceCall.target)).length === 1);
+            if (partial.length === 1) call = partial[0];
+          }
           if (call) used.add(call);
           const color = commandColor(match, call);
           const symbol = color === "error" ? "✗" : color === "success" ? "✓"
             : call?.status === "running" || (!call && match === "searchTools" && this.partial)
               ? "…" : call?.status === "cancelled" ? "–"
-              : call ? "?" : generic ? (this.partial ? "…" : "?") : "";
-          annotations.set(source.slice(0, offset).split("\n").length - 1, { symbol, color, call, defaultTool: compactName !== undefined });
+              : !call && generic && this.partial ? "…" : "";
+          annotations.set(source.slice(0, offset).split("\n").length - 1, { symbol, color, call, defaultTool: compactName !== undefined && !compactCall?.command });
           return fg(color, displayName);
         },
       );
@@ -670,28 +693,19 @@ export class Screen implements Component {
               original = "… (path truncated)";
             } else return false;
           }
-          const available = Math.max(0, w - visibleWidth(left) - (duration ? duration.length + 2 : 0));
-          const separator = original.includes("/") ? "/" : "\\";
-          const segments = original.split(separator);
-          let target = segments.length > 3
-            ? "…" + separator + segments.slice(-3).join(separator) : original;
-          while (visibleWidth(target) > available && segments.length > 1) {
-            segments.shift();
-            target = "…" + separator + segments.join(separator);
-          }
-          if (visibleWidth(target) > available) {
-            const tail = Array.from(segments[0] ?? target);
-            while (tail.length && visibleWidth("…" + tail.join("")) > available) tail.shift();
-            target = available ? "…" + tail.join("") : "";
-          }
-          const fitted = truncateToWidth(left + target, w, "").replace(/\x1b\[[0-9;]*m/g, "");
-          const gap = duration ? Math.max(0, w - visibleWidth(fitted) - duration.length) : 0;
-
-          row(color === "error"
-            ? fg("error", fitted + " ".repeat(gap)) + fg("muted", duration)
-            : fg(color, fitted.slice(0, left.trimEnd().length)) +
-              fitted.slice(left.trimEnd().length) + " ".repeat(gap) + fg(timeColor, duration),
-            "toolOutput", true);
+          const parts = preview(w, left + safeText(original), Infinity);
+          parts.forEach((part, index) => {
+            const last = index === parts.length - 1;
+            if (last && duration && visibleWidth(part) + duration.length + 2 <= w)
+              row(fg(color, part) + " ".repeat(w - visibleWidth(part) - duration.length) +
+                fg(timeColor, duration), "toolOutput", true);
+            else {
+              row(part, color);
+              if (last && duration)
+                row(" ".repeat(Math.max(0, w - duration.length)) + fg(timeColor, duration),
+                  "toolOutput", true);
+            }
+          });
           if (call?.status === "cancelled") row("cancelled", "warning");
           if (call?.cost !== undefined) row("Cost: $" + call.cost, "muted");
           return true;
@@ -709,55 +723,9 @@ export class Screen implements Component {
               line.replace(/\x1b\[[0-9;]*m/g, ""))
           : prefix + line;
         if (!annotation?.defaultTool && fileCommand(command, duration, annotation?.color ?? "syntaxFunction", timeColor, call)) return;
-        if (!annotation?.defaultTool && /^(?:[✓✗…–] )?(?:bash|powershell) /.test(command.replace(/\x1b\[[0-9;]*m/g, ""))) {
-          const plain = command.replace(/\x1b\[[0-9;]*m/g, "");
-          const match = plain.match(/^((?:[✓✗…–] )?(?:bash|powershell) )(.*?)( · timeout [\d.e+-]+s)?$/);
-          if (match) {
-            const left = match[1]!;
-            const suffix = (match[3] ?? "") + (duration ? "  " + duration : "");
-            const available = w - visibleWidth(left) - visibleWidth(suffix);
-            const text = available >= 3
-              ? left + truncateToWidth(match[2]!, available, "...") + suffix
-              : truncateToWidth(plain, w, w >= 3 ? "..." : "");
-            // Plain text truncation adds full ANSI resets, which clear Pi’s background.
-            // Keep only the foreground styling supplied by the theme.
-            const stripped = text.replace(/\x1b\[[0-9;]*m/g, "");
-            const clean = duration && stripped.endsWith("  " + duration)
-              ? stripped.slice(0, -duration.length) +
-                " ".repeat(Math.max(0, w - visibleWidth(stripped))) + duration
-              : stripped;
-            const color = annotation?.color ?? "syntaxFunction";
-            const commandEnd = left.trimEnd().length;
-            const time = duration;
-            row(color === "error"
-              ? (time && clean.endsWith(time)
-                ? fg("error", clean.slice(0, -time.length)) + fg("muted", time)
-                : fg("error", clean))
-              : fg(color, clean.slice(0, commandEnd)) +
-                clean.slice(commandEnd, time && clean.endsWith(time) ? -time.length : undefined) +
-                (time && clean.endsWith(time) ? fg(timeColor, time) : ""),
-              "toolOutput", true);
-            if (call?.status === "cancelled") row("cancelled", "warning");
-            if (call?.cost !== undefined) row("Cost: $" + call.cost, "muted");
-            return;
-          }
-        }
-        const formatGenericCall = (text: string, lineLimit = 1): string[] => {
-          // Reserve space for the duration so the default stays on one row.
-          const available = Math.max(1, w - (duration ? duration.length + 2 : 0));
-          const wrapped = wrapTextWithAnsi(text, available);
-          const limit = Math.max(1, Math.floor(lineLimit));
-          const shown = wrapped.slice(0, limit);
-          if (wrapped.length > shown.length) {
-            const last = shown.length - 1;
-            shown[last] = truncateToWidth(shown[last]!, Math.max(0, available - 3), "")
-              .replace(/\x1b\[(?:0)?m/g, "") + ".".repeat(Math.min(3, available));
-          }
-          return shown;
-        };
-        const parts = annotation?.defaultTool
-          ? formatGenericCall(command)
-          : wrapTextWithAnsi(command, w);
+        const shell = /^(?:bash|powershell)$/i.test(compactByLine.get(index)?.[0]?.name ?? call?.name ?? "");
+        const parts = preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
+          command, shell ? 1 : annotation ? 3 : Infinity);
         parts.forEach((part, i) => {
           if (duration && i === parts.length - 1 && visibleWidth(part) + duration.length + 2 <= w)
             row(part + " ".repeat(w - visibleWidth(part) - duration.length) + fg(timeColor, duration), "toolOutput", true);
@@ -785,7 +753,10 @@ export class Screen implements Component {
         if (visibleWidth(left) + duration.length + 2 <= w)
           row(left + " ".repeat(w - visibleWidth(left) - duration.length) + fg("muted", duration), "toolOutput", true);
         else {
-          row(left, "toolOutput", true);
+          const shell = /^(?:bash|powershell)$/i.test(call.name);
+          for (const part of preview(Math.max(1, w - (duration ? visibleWidth(duration) + 2 : 0)),
+            left, shell ? 1 : 3))
+            row(part, "toolOutput", true);
           if (duration) row(" ".repeat(Math.max(0, w - duration.length)) + fg("muted", duration), "toolOutput", true);
         }
         if (call.status === "cancelled") row("cancelled", "warning");

@@ -32,6 +32,12 @@ interface DisplayOverride {
 const displayOverrides: Record<string, DisplayOverride> = {
   ...Object.fromEntries(Object.entries(targetFields).map(([name, field]) =>
     [name, { fields: [field], rawTarget: true }])),
+  read: { fields: ["path"], rawTarget: true, hidden: ["offset", "limit"] },
+  grep: { fields: ["pattern"], rawTarget: true, hidden: ["limit"] },
+  find: { fields: ["pattern"], rawTarget: true, hidden: ["limit"] },
+  ls: { fields: ["path"], rawTarget: true, hidden: ["limit"] },
+  bash: { fields: ["command"], rawTarget: true, hidden: ["timeout"] },
+  powershell: { fields: ["command"], rawTarget: true, hidden: ["timeout"] },
   edit: { fields: ["path"], rawTarget: true, hidden: ["oldText", "newText", "edits"] },
   write: { fields: ["path"], rawTarget: true, hidden: ["content"] },
   skill_search: { fields: ["query"], hidden: ["limit"] },
@@ -58,20 +64,19 @@ const displayOverrides: Record<string, DisplayOverride> = {
   mcp__gitnexus__api_impact: { fields: ["route", "file", "method"], labeled: ["method"] },
 };
 
-type MarkTool = (name: string) => string;
+type MarkTool = (name: string, command?: boolean, target?: string) => string;
 
 /** Default for every tool without a more useful command-specific layout. */
 function defaultToolCall(node: CallExpression, code: string, name: string, mark: MarkTool,
   override: DisplayOverride = {}): string {
-  const clip = (value: string) => value.length > 80 ? value.slice(0, 77) + "…" : value;
   const source = (node: Node) => {
     const range = node as Node & { start: number; end: number };
-    return clip(code.slice(range.start, range.end).replace(/\s+/g, " ").trim());
+    return code.slice(range.start, range.end).replace(/\s+/g, " ").trim();
   };
   const value = (node: Node, depth = 0): string => {
     if (depth > 3) return "…";
     if (node.type === "Literal" && typeof node.value === "string")
-      return JSON.stringify(clip(node.value));
+      return JSON.stringify(node.value);
     if (node.type === "ObjectExpression")
       return "{" + items(node.properties, depth, ", ") + "}";
     if (node.type === "ArrayExpression")
@@ -95,6 +100,7 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
   const argument = node.arguments[0];
   let args: string;
   let rawTarget = false;
+  let identityTarget: string | undefined;
   if (node.arguments.length === 1 && argument?.type === "ObjectExpression") {
     const keyOf = (node: Node): string | undefined =>
       node.type === "Property" && !node.computed && !node.method && node.kind === "init"
@@ -117,12 +123,17 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
         if (override.rawTarget) {
           rawTarget = true;
           const target = p.value;
+          if (target.type === "Literal" && typeof target.value === "string")
+            identityTarget = target.value;
+          else if (target.type === "TemplateLiteral" && target.expressions.length === 0)
+            identityTarget = target.quasis.map(part => part.value.cooked ?? part.value.raw).join("");
           const range = target as Node & { start: number; end: number };
-          return (target.type === "Literal" && typeof target.value === "string"
+          const displayTarget = (target.type === "Literal" && typeof target.value === "string"
             ? target.value
             : target.type === "TemplateLiteral" && target.expressions.length === 0
               ? target.quasis.map(part => part.value.cooked ?? part.value.raw).join("")
               : code.slice(range.start, range.end)).replace(/\s+/g, " ").trim();
+          return displayTarget;
         }
         if (name === "todo" && key === "action" && p.value.type === "Literal" &&
             typeof p.value.value === "string") return p.value.value;
@@ -159,7 +170,7 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
       }
     }
   } else args = items(node.arguments, 0, " · ");
-  return (rawTarget ? name : mark(name)) + (args ? " " + args : "");
+  return mark(name, rawTarget, identityTarget) + (args ? " " + args : "");
 }
 
 /** All tool layouts use the default formatter with display-only overrides. */
@@ -338,11 +349,7 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
             return "/" + node.regex.pattern + "/" + node.regex.flags;
           if ("bigint" in node) return node.bigint + "n";
           if (typeof node.value === "string") {
-            const value =
-              node.value.length > 80
-                ? node.value.slice(0, 77) + "…"
-                : node.value;
-            return JSON.stringify(value);
+            return JSON.stringify(node.value);
           }
           return JSON.stringify(node.value) ?? String(node.value);
         case "TemplateLiteral": {
@@ -545,7 +552,7 @@ function renderPseudocode(code: string, mark: MarkTool, width: number): string {
 
 export interface ToolSummary {
   text: string;
-  calls: { name: string; line: number; column: number }[];
+  calls: { name: string; line: number; column: number; command?: boolean; target?: string }[];
 }
 
 /** Retain call identity separately from its display text. */
@@ -555,9 +562,10 @@ export function summarize(code: string, width = 80): ToolSummary {
   const plain = renderPseudocode(code, name => name, width);
   let marker = "\u0000tool";
   while (code.includes(marker) || plain.includes(marker)) marker += "_";
-  const names: string[] = [];
-  const marked = renderPseudocode(code, name => {
-    names.push(name);
+  const names: { name: string; command?: boolean; target?: string }[] = [];
+  const marked = renderPseudocode(code, (name, command, target) => {
+    names.push({ name, ...(command ? { command: true } : {}),
+      ...(target !== undefined ? { target } : {}) });
     return marker + (names.length - 1) + "\u0000" + name;
   }, width);
   const calls: ToolSummary["calls"] = [];
@@ -568,8 +576,8 @@ export function summarize(code: string, width = 80): ToolSummary {
     if (start < 0) break;
     text += marked.slice(offset, start);
     const end = marked.indexOf("\u0000", start + marker.length);
-    const name = names[Number(marked.slice(start + marker.length, end))]!;
-    calls.push({ name, line: text.split("\n").length - 1,
+    const identity = names[Number(marked.slice(start + marker.length, end))]!;
+    calls.push({ ...identity, line: text.split("\n").length - 1,
       column: text.length - text.lastIndexOf("\n") - 1 });
     offset = end + 1;
   }
