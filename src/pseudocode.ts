@@ -1,9 +1,133 @@
 import { parse, tokenizer, type Token } from "acorn";
-import type { Node, Program } from "estree";
+import type { CallExpression, Node, Program } from "estree";
 
-const primaryTools = new Set([
-  "read", "edit", "write", "bash", "powershell", "grep", "find", "ls",
-]);
+const targetFields: Record<string, string> = {
+  read: "path", edit: "path", write: "path", ls: "path",
+  bash: "command", powershell: "command", grep: "pattern", find: "pattern",
+};
+const primaryTools = new Set(Object.keys(targetFields));
+
+/** Ordered fields are displayed first and without redundant labels. */
+const displayFields: Record<string, string[]> = {
+  skill_search: ["query"], tool_search: ["query"], getToolGuidance: ["name"],
+  resolve_library_id: ["libraryName", "query"],
+  query_docs: ["libraryId", "query"],
+  mnemosyne_recall: ["query"], mnemosyne_remember: ["content"],
+  mnemosyne_forget: ["id"],
+  web_search: ["query", "queries"], source_check: ["claim"],
+  fetch_content: ["url", "urls"],
+  get_search_content: ["responseId", "url", "query"],
+  todo: ["action", "subject", "id"],
+  create_goal: ["objective"], get_goal: ["section", "task_id"],
+};
+
+type MarkTool = (name: string) => string;
+
+/** Default for every tool without a more useful command-specific layout. */
+function defaultToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
+  const clip = (value: string) => value.length > 80 ? value.slice(0, 77) + "…" : value;
+  const source = (node: Node) => {
+    const range = node as Node & { start: number; end: number };
+    return clip(code.slice(range.start, range.end).replace(/\s+/g, " ").trim());
+  };
+  const value = (node: Node, depth = 0): string => {
+    if (depth > 3) return "…";
+    if (node.type === "Literal" && typeof node.value === "string")
+      return JSON.stringify(clip(node.value));
+    if (node.type === "ObjectExpression")
+      return "{" + items(node.properties, depth, ", ") + "}";
+    if (node.type === "ArrayExpression")
+      return "[" + node.elements.slice(0, 3).map(item => item ? value(item, depth + 1) : "")
+        .concat(node.elements.length > 3 ? ["…"] : []).join(", ") + "]";
+    if (node.type === "Property" && !node.computed && !node.method && node.kind === "init") {
+      const key = node.key.type === "Literal" && typeof node.key.value === "string" &&
+        /^[A-Za-z_$][\w$]*$/.test(node.key.value) ? node.key.value : source(node.key);
+      return node.shorthand ? value(node.value, depth)
+        : key + ": " + value(node.value, depth);
+    }
+    return source(node);
+  };
+  const items = (nodes: Node[], depth: number, separator: string) =>
+    nodes.slice(0, 3).map(node => value(node, depth + 1))
+      .concat(nodes.length > 3 ? ["…"] : []).join(separator);
+  const argument = node.arguments[0];
+  let args: string;
+  if (node.arguments.length === 1 && argument?.type === "ObjectExpression") {
+    const keyOf = (node: Node): string | undefined =>
+      node.type === "Property" && !node.computed && !node.method && node.kind === "init"
+        ? node.key.type === "Identifier" ? node.key.name
+          : node.key.type === "Literal" && typeof node.key.value === "string" ? node.key.value
+          : undefined : undefined;
+    // Spreads, computed keys, and duplicates can change the actual target.
+    const keys = argument.properties.map(keyOf);
+    const safe = keys.every(key => key !== undefined) && new Set(keys).size === keys.length;
+    const preferred = safe && Object.hasOwn(displayFields, name) ? displayFields[name]! : [];
+    const targets = preferred.flatMap(key => argument.properties.filter(p => keyOf(p) === key));
+    const rest = argument.properties.filter(p => !targets.includes(p));
+    const shown = [...targets, ...rest].slice(0, 3);
+    args = shown.map(p => {
+      if (targets.includes(p) && p.type === "Property") {
+        const key = keyOf(p);
+        if (name === "todo" && key === "action" && p.value.type === "Literal" &&
+            typeof p.value.value === "string") return p.value.value;
+        if (name === "todo" && key === "id") return "#" + value(p.value);
+        if (p.value.type === "Literal" && typeof p.value.value === "string" &&
+            /^[\p{L}_][\p{L}\p{N}_-]*$/u.test(p.value.value))
+          return p.value.value;
+        return value(p.value);
+      }
+      return value(p);
+    }).concat(argument.properties.length > shown.length ? ["…"] : []).join(" · ");
+    if (name === "todo" && targets.length > 1 && keyOf(targets[0]!) === "action") {
+      // The action and task target form one command.
+      args = args.replace(" · ", " ");
+    }
+    if (name === "ask_user_question" && safe) {
+      const questions = argument.properties.find(p => keyOf(p) === "questions");
+      if (questions?.type === "Property" && questions.value.type === "ArrayExpression") {
+        const entries = questions.value.elements;
+        const texts = entries.map(entry => {
+          if (entry?.type !== "ObjectExpression") return undefined;
+          const entryKeys = entry.properties.map(keyOf);
+          if (entryKeys.some(key => key === undefined) || new Set(entryKeys).size !== entryKeys.length)
+            return undefined;
+          const field = entry.properties.find(p => keyOf(p) === "question");
+          return field?.type === "Property" ? value(field.value) : undefined;
+        });
+        if (texts.every(text => text !== undefined)) {
+          const extra = argument.properties.filter(p => p !== questions);
+          args = texts.slice(0, 3).concat(texts.length > 3 ? ["…"] : []).join(" · ") +
+            " · " + entries.length + (entries.length === 1 ? " question" : " questions") +
+            (extra.length ? " · " + items(extra, 0, " · ") : "");
+        }
+      }
+    }
+  } else args = items(node.arguments, 0, " · ");
+  return mark(name) + (args ? " " + args : "");
+}
+
+/** Small overrides share the same entry point as the default formatter. */
+function formatToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
+  const argument = node.arguments[0];
+  const key = Object.hasOwn(targetFields, name) ? targetFields[name] : undefined;
+  if (key && node.arguments.length === 1 && argument?.type === "ObjectExpression") {
+    const field = argument.properties.find(p => p.type === "Property" &&
+      !p.computed && !p.method && p.kind === "init" &&
+      ((p.key.type === "Identifier" && p.key.name === key) ||
+       (p.key.type === "Literal" && p.key.value === key)));
+    if (field?.type === "Property") {
+      const value = field.value;
+      const range = value as Node & { start: number; end: number };
+      const target = value.type === "Literal" && typeof value.value === "string"
+        ? value.value
+        : value.type === "TemplateLiteral" && value.expressions.length === 0
+          ? value.quasis.map(part => part.value.cooked ?? part.value.raw).join("")
+          : code.slice(range.start, range.end);
+      return name + " " + target.replace(/\s+/g, " ").trim();
+    }
+  }
+  return defaultToolCall(node, code, name, mark);
+}
 
 // Codemode globals are meaningful operations, not ordinary result variables.
 const codemodeHelpers = new Set([
@@ -12,7 +136,7 @@ const codemodeHelpers = new Set([
 ]);
 
 /** Simplify tokens without changing strings or comments. */
-function syntaxPseudocode(code: string): string {
+function syntaxPseudocode(code: string, mark: MarkTool): string {
   const tokens = tokenizer(code, { ecmaVersion: "latest" });
   const replacements: { start: number; end: number; text: string }[] = [];
   const scanned: Token[] = [];
@@ -64,8 +188,7 @@ function syntaxPseudocode(code: string): string {
       ![".", "?."].includes(scanned[index - 1]?.type.label ?? "") &&
       scanned[index + 1]?.type.label === "." &&
       property?.type.label === "name" &&
-      scanned[index + 3]?.type.label === "(" &&
-      primaryTools.has(code.slice(property.start, property.end))
+      scanned[index + 3]?.type.label === "("
     ) {
       const close = pairs.get(index + 3);
       const call = close === undefined ? undefined
@@ -73,36 +196,22 @@ function syntaxPseudocode(code: string): string {
       let summary: string | undefined;
       if (call && call.length <= 50000) {
         try {
-          const parsed = parse(call, { ecmaVersion: "latest" }) as unknown as Program;
+          const parsed = parse(call, { ecmaVersion: "latest", allowAwaitOutsideFunction: true }) as unknown as Program;
           const expression = parsed.body[0];
           if (expression?.type === "ExpressionStatement" &&
               expression.expression.type === "CallExpression") {
-            const arg = expression.expression.arguments[0];
-            const name = code.slice(property.start, property.end);
-            const key = ["bash", "powershell"].includes(name) ? "command"
-              : ["find", "grep"].includes(name) ? "pattern" : "path";
-            if (arg?.type === "ObjectExpression") {
-              const field = arg.properties.find((p) => p.type === "Property" &&
-                !p.computed && !p.method && p.kind === "init" &&
-                ((p.key.type === "Identifier" && p.key.name === key) ||
-                 (p.key.type === "Literal" && p.key.value === key)));
-              if (field?.type === "Property" && field.value.type === "Literal" &&
-                  typeof field.value.value === "string")
-                summary = name + " " + field.value.value.replace(/\s+/g, " ").trim();
-              else if (field?.type === "Property" && field.value.type === "TemplateLiteral" &&
-                  field.value.expressions.length === 0)
-                summary = name + " " + field.value.quasis.map((part) =>
-                  part.value.cooked ?? part.value.raw).join("").replace(/\s+/g, " ").trim();
-            }
+            summary = formatToolCall(expression.expression, call,
+              code.slice(property.start, property.end), mark);
           }
         } catch { /* Keep incomplete calls readable. */ }
       }
       replacements.push({
         start: token.start,
-        end: summary?.startsWith(code.slice(property.start, property.end) + " ")
+        end: summary !== undefined
           ? scanned[close!]!.end : property.end,
-        text: summary?.startsWith(code.slice(property.start, property.end) + " ")
-          ? summary : code.slice(property.start, property.end),
+        text: summary !== undefined
+          ? summary : primaryTools.has(code.slice(property.start, property.end))
+            ? code.slice(property.start, property.end) : mark(code.slice(property.start, property.end)),
       });
     }
     if (
@@ -152,9 +261,9 @@ function syntaxPseudocode(code: string): string {
 }
 
 /** Reduce parsed syntax to code-like pseudocode. Never execute the script. */
-export function pseudocode(code: string): string {
+function renderPseudocode(code: string, mark: MarkTool): string {
   if (!code.trim()) return "// no code";
-  if (code.length > 50000) return syntaxPseudocode(code);
+  if (code.length > 50000) return syntaxPseudocode(code, mark);
   try {
     const program = parse(code, {
       ecmaVersion: "latest",
@@ -224,48 +333,18 @@ export function pseudocode(code: string): string {
             : node.callee.type === "MemberExpression" && !node.callee.computed &&
               node.callee.object.type === "Identifier" && node.callee.object.name === "tools" &&
               node.callee.property.type === "Identifier" ? node.callee.property.name : undefined;
-          if (helper === "describeTool" || helper === "getToolGuidance" || helper === "searchTools") {
-            let value: Node | undefined = node.arguments[0];
-            if (helper === "getToolGuidance" && value?.type === "ObjectExpression") {
-              const field = value.properties.find((p) => p.type === "Property" &&
-                !p.computed && !p.method && p.kind === "init" &&
-                ((p.key.type === "Identifier" && p.key.name === "name") ||
-                 (p.key.type === "Literal" && p.key.value === "name")));
-              value = field?.type === "Property" ? field.value : undefined;
-            }
+          if (helper === "describeTool" || helper === "searchTools") {
+            const value: Node | undefined = node.arguments[0];
             if (value?.type === "Literal" && typeof value.value === "string")
               return helper + " " + value.value;
           }
-          const callee = child(node.callee);
-          const name =
-            node.callee.type === "MemberExpression" &&
-            !node.callee.computed &&
-            node.callee.object.type === "Identifier" &&
-            node.callee.object.name === "tools" &&
-            node.callee.property.type === "Identifier" &&
-            primaryTools.has(node.callee.property.name)
-              ? node.callee.property.name
-              : callee;
-          const argument = node.arguments[0];
-          if (primaryTools.has(name.toLowerCase()) &&
-              node.arguments.length === 1 && argument?.type === "ObjectExpression") {
-            const key = ["bash", "powershell"].includes(name.toLowerCase()) ? "command"
-              : ["find", "grep"].includes(name.toLowerCase()) ? "pattern" : "path";
-            const property = argument.properties.find((property) =>
-              property.type === "Property" && !property.computed &&
-              !property.method && property.kind === "init" &&
-              ((property.key.type === "Identifier" && property.key.name === key) ||
-               (property.key.type === "Literal" && property.key.value === key)));
-            if (property?.type === "Property") {
-              const value = property.value;
-              return name.toLowerCase() + " " +
-                (value.type === "Literal" && typeof value.value === "string"
-                  ? value.value.replace(/\s+/g, " ").trim()
-                  : value.type === "TemplateLiteral" && value.expressions.length === 0
-                    ? value.quasis.map((part) => part.value.cooked ?? part.value.raw).join("").replace(/\s+/g, " ").trim()
-                    : child(value).replace(/\s+/g, " ").trim());
-            }
-          }
+          if (node.callee.type === "MemberExpression" && !node.callee.computed &&
+              node.callee.object.type === "Identifier" && node.callee.object.name === "tools" &&
+              node.callee.property.type === "Identifier")
+            return formatToolCall(node, code, node.callee.property.name, mark);
+          const name = child(node.callee);
+          if (primaryTools.has(name.toLowerCase()))
+            return formatToolCall(node, code, name.toLowerCase(), mark);
           if (
             node.callee.type === "FunctionExpression" ||
             node.callee.type === "ArrowFunctionExpression"
@@ -393,7 +472,7 @@ export function pseudocode(code: string): string {
           return "";
         default: {
           const source = node as Node & { start: number; end: number };
-          return syntaxPseudocode(code.slice(source.start, source.end));
+          return syntaxPseudocode(code.slice(source.start, source.end), mark);
         }
       }
     };
@@ -404,6 +483,43 @@ export function pseudocode(code: string): string {
       .join("\n");
     return summary || "// no code";
   } catch {
-    return syntaxPseudocode(code);
+    return syntaxPseudocode(code, mark);
   }
+}
+
+export interface ToolSummary {
+  text: string;
+  calls: { name: string; line: number; column: number }[];
+}
+
+/** Retain call identity separately from its display text. */
+export function summarize(code: string): ToolSummary {
+  // Check decoded display text too: escaped string literals can introduce NULs.
+  const plain = renderPseudocode(code, name => name);
+  let marker = "\u0000tool";
+  while (code.includes(marker) || plain.includes(marker)) marker += "_";
+  const names: string[] = [];
+  const marked = renderPseudocode(code, name => {
+    names.push(name);
+    return marker + (names.length - 1) + "\u0000" + name;
+  });
+  const calls: ToolSummary["calls"] = [];
+  let text = "";
+  let offset = 0;
+  while (true) {
+    const start = marked.indexOf(marker, offset);
+    if (start < 0) break;
+    text += marked.slice(offset, start);
+    const end = marked.indexOf("\u0000", start + marker.length);
+    const name = names[Number(marked.slice(start + marker.length, end))]!;
+    calls.push({ name, line: text.split("\n").length - 1,
+      column: text.length - text.lastIndexOf("\n") - 1 });
+    offset = end + 1;
+  }
+  text += marked.slice(offset);
+  return { text, calls };
+}
+
+export function pseudocode(code: string): string {
+  return summarize(code).text;
 }

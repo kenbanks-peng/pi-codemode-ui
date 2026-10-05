@@ -242,7 +242,8 @@ test("pseudocode uses uppercase primary tool names without changing other names 
     for (const name of ["READ", "EDIT", "BASH", "WRITE", "GREP", "FIND", "LS", "POWERSHELL"])
       assert.ok(screen.includes(prefix === "" && name === "BASH" ? "BASH pwd" : prefix === "" && name === "READ" ? "READ tools.read" : name + "("), name);
     assert.match(screen, prefix === "" ? /READ tools\.read/ : /"tools\.read"/);
-    assert.match(screen, /tools\.custom\(\{\}\)/);
+    assert.match(screen, /custom/);
+    assert.doesNotMatch(screen, /tools\.custom/);
     assert.match(screen, /other\.read\(\)/);
   }
 });
@@ -594,4 +595,52 @@ test("truncated bash ellipsis and timeout do not reset the host background", () 
   const command = lines.find((line) => plain([line]).includes('BASH'))!;
   assert.match(plain([command]), /\.\.\. · timeout 120s/);
   assert.doesNotMatch(command, /\x1b\[(?:0)?m|\x1b\[49m|\x1b\[4[0-8]m|\x1b\[48[;:]/);
+});
+
+test("unknown tools use compact calls with status and preserve expanded source", () => {
+  for (const prefix of ["", "/* large */".repeat(5000) + "\n", "try {\n"]) {
+    const code = prefix + 'text(await tools.skill_search({query: "agents", limit: 1}));';
+    const result = { content: [], details: { calls: [
+      { name: "skill_search", args: { query: "agents", limit: 1 }, status: "ok", durationMs: 12 },
+    ] } };
+    const render = (expanded: boolean) => plain(renderer().renderResult!(
+      result as never, { expanded, isPartial: false }, theme(),
+      context({ args: { code }, expanded }),
+    ).render(120));
+    const compact = render(false);
+    assert.match(compact, /✓ skill_search agents · limit: 1;?\s+12ms/);
+    assert.doesNotMatch(compact, /tools\.skill_search|skill_search\(/);
+    assert.equal(compact.split("skill_search").length - 1, 1);
+    assert.ok(render(true).includes('text(await tools.skill_search({query: "agents", limit: 1}));'));
+  }
+});
+
+test("default tool metadata survives discovery grouping, indentation, and overlapping names", () => {
+  const code = 'searchTools("read");\ndescribeTool("read");\ntools.getToolGuidance({name: "read"});\n' +
+    'if (true) { tools.lookup({}); tools.lookupLong({}); }\n' +
+    'tools.$lookup({});\ntools.read({unexpected: true});';
+  const names = ["lookup", "lookupLong", "$lookup", "read"];
+  const calls = names.map((name, index) => ({
+    name, args: name === "read" ? { unexpected: true } : {}, status: "ok", durationMs: 11 + index,
+  }));
+  const screen = plain(renderer().renderResult!(
+    { content: [], details: { calls } } as never,
+    { expanded: false, isPartial: false }, theme(), context({ args: { code } }),
+  ).render(120));
+  assert.match(screen, /✓\s+lookup\s+11ms/);
+  assert.match(screen, /✓\s+lookupLong\s+12ms/);
+  assert.match(screen, /✓ \$lookup\s+13ms/);
+  assert.match(screen, /✓ read unexpected: true\s+14ms/);
+  assert.equal(screen.split("unexpected").length - 1, 1);
+});
+
+test("unrecorded default tool calls remain unknown or pending, not successful", () => {
+  for (const [partial, symbol] of [[false, "?"], [true, "…"]] as const) {
+    const screen = plain(renderer().renderResult!(
+      { content: [], details: {} } as never, { expanded: false, isPartial: partial },
+      theme(), context({ args: { code: 'tools.custom({enabled: true})' } }),
+    ).render(100));
+    assert.ok(screen.includes(symbol + " custom enabled: true"));
+    assert.ok(!screen.includes("✓"));
+  }
 });

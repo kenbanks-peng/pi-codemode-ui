@@ -12,7 +12,7 @@ import {
   type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { isDiscovery, record, safeText, type Call, type Model } from "./model.ts";
-import { pseudocode } from "./pseudocode.ts";
+import { summarize, type ToolSummary } from "./pseudocode.ts";
 
 const formatDuration = (ms: number): string =>
   ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : Math.round(ms) + "ms";
@@ -76,7 +76,7 @@ function tree(value: unknown): string[] | undefined {
 }
 
 export class Screen implements Component {
-  private summary: string | undefined;
+  private summary: ToolSummary | undefined;
   private buttonRow = -1;
   private buttonWidth = 0;
   private buttonLeft = 2;
@@ -90,7 +90,7 @@ export class Screen implements Component {
     private receiving = false,
     private isLatestOutput: () => boolean = () => false,
   ) {
-    this.summary = expanded ? undefined : pseudocode(code);
+    this.summary = expanded ? undefined : summarize(code);
   }
   invalidate(): void {} // No styled strings are cached.
   handleMouse(event: TuiMouseEvent) {
@@ -547,9 +547,16 @@ export class Screen implements Component {
       textBody(this.code, true);
     } else {
       // Protect quoted strings and comments; style only primary call names.
-      let source = safeText(summary ?? pseudocode(this.code));
+      const formatted = summary ?? summarize(this.code);
+      let source = safeText(formatted.text);
+      const originalLines = formatted.text.split("\n");
+      const compactCalls = formatted.calls.map(call => ({
+        ...call, column: safeText(originalLines[call.line]!.slice(0, call.column)).length,
+      }));
+      const compactByLine = new Map<number, typeof compactCalls>();
+
       const used = new Set<Call>();
-      const annotations = new Map<number, { symbol: string; color: ThemeColor; call?: Call }>();
+      const annotations = new Map<number, { symbol: string; color: ThemeColor; call?: Call; defaultTool?: boolean }>();
       const commandColor = (name: string, call?: Call): ThemeColor => {
         const tool = name.toLowerCase();
         if (call?.status === "error" || call?.error) return "error";
@@ -590,20 +597,39 @@ export class Screen implements Component {
           });
           grouped.push("discover " + target);
           index += 2;
-        } else grouped.push(sourceLines[index]!);
+        } else {
+          compactByLine.set(grouped.length, compactCalls.filter(call => call.line === index));
+          grouped.push(sourceLines[index]!);
+        }
       }
       source = grouped.join("\n");
-      const styled = source.replace(
-        /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*|\btools\.[A-Za-z_$][\w$]*(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?= [^\n])|^  (?:oldText|newText):/gm,
+      const compactOffsets = new Map<number, string>();
+      let lineOffset = 0;
+      grouped.forEach((line, index) => {
+        for (const call of compactByLine.get(index) ?? [])
+          compactOffsets.set(lineOffset + call.column, call.name);
+        lineOffset += line.length + 1;
+      });
+      const toolNames = [...new Set(compactOffsets.values())].sort((a, b) => b.length - a.length)
+        .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const legacyPattern = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\*[\s\S]*?\*\/|\/\/[^\n]*|\btools\.[A-Za-z_$][\w$]*(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?=\s*\()|\b(?:read|edit|write|bash|powershell|grep|find|ls|discover|searchTools|describeTool|describeNamespace|getToolGuidance)(?= [^\n])|^  (?:oldText|newText):/gm;
+      const legacyOffsets = new Set([...source.matchAll(legacyPattern)].map(match => match.index));
+      const pattern = new RegExp(legacyPattern.source +
+        (toolNames.length ? "|" + toolNames.join("|") : ""), "gm");
+      const styled = source.replace(pattern,
         (displayName, offset: number) => {
-          const generic = displayName.startsWith("tools.");
-          const match = generic ? displayName.slice(6) : displayName;
-          if (!/^[A-Za-z_$][\w$]*$/.test(match) || /[\w.]/.test(source[offset - 1] ?? ""))
+          const compactName = compactOffsets.get(offset);
+          const generic = compactName !== undefined || displayName.startsWith("tools.");
+          const match = compactName ?? (generic ? displayName.slice(6) : displayName);
+          // A default tool name is valid only at a formatter-provided position.
+          if (!compactName && !legacyOffsets.has(offset)) return displayName;
+          if ((!compactName && !/^[A-Za-z_$][\w$]*$/.test(match)) ||
+              /[\w.]/.test(source[offset - 1] ?? ""))
             return displayName;
           // Query words can be tool names; only the first command owns the row status.
           const lineIndex = source.slice(0, offset).split("\n").length - 1;
           if (annotations.has(lineIndex)) return displayName;
-          const editPath = (match === "edit" || match === "read") && source[offset + match.length] === " "
+          const editPath = !compactName && (match === "edit" || match === "read") && source[offset + match.length] === " "
             ? source.slice(offset + match.length + 1).split("\n")[0]
             : undefined;
           const call = groups.get(source.slice(0, offset).split("\n").length - 1) ?? this.data.calls.find((call) =>
@@ -616,7 +642,7 @@ export class Screen implements Component {
             : call?.status === "running" || (!call && match === "searchTools" && this.partial)
               ? "…" : call?.status === "cancelled" ? "–"
               : call ? "?" : generic ? (this.partial ? "…" : "?") : "";
-          annotations.set(source.slice(0, offset).split("\n").length - 1, { symbol, color, call });
+          annotations.set(source.slice(0, offset).split("\n").length - 1, { symbol, color, call, defaultTool: compactName !== undefined });
           return fg(color, displayName);
         },
       );
@@ -679,8 +705,8 @@ export class Screen implements Component {
           ? fg("error", (annotation.symbol ? annotation.symbol + " " : "") +
               line.replace(/\x1b\[[0-9;]*m/g, ""))
           : prefix + line;
-        if (fileCommand(command, duration, annotation?.color ?? "syntaxFunction", timeColor, call)) return;
-        if (/^(?:[✓✗…–] )?(?:bash|powershell) /.test(command.replace(/\x1b\[[0-9;]*m/g, ""))) {
+        if (!annotation?.defaultTool && fileCommand(command, duration, annotation?.color ?? "syntaxFunction", timeColor, call)) return;
+        if (!annotation?.defaultTool && /^(?:[✓✗…–] )?(?:bash|powershell) /.test(command.replace(/\x1b\[[0-9;]*m/g, ""))) {
           const plain = command.replace(/\x1b\[[0-9;]*m/g, "");
           const match = plain.match(/^((?:[✓✗…–] )?(?:bash|powershell) )(.*?)( · timeout [\d.e+-]+s)?$/);
           if (match) {

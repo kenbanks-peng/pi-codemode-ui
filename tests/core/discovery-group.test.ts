@@ -75,7 +75,7 @@ test("generic tools receive status and duration without a name allowlist", () =>
       const screen = stripVTControlCharacters(new Screen(
         data, code, false, status === "running", theme,
       ).render(160).join("\n"));
-      assert.ok(screen.includes(symbol + " tools." + name + "("), screen);
+      assert.ok(screen.includes(symbol + " " + name + (name === "skill_search" ? ' "read bash"' : ' query: "read bash"')), screen);
       assert.match(screen, /12ms/);
     }
   }
