@@ -51,6 +51,33 @@ test("shared target overrides work in parsed and syntax fallback paths", () => {
   }
 });
 
+test("display overrides retain options and hide only selected fields", () => {
+  const cases = [
+    ['tools.read({limit: 100, path: "src/index.ts", offset: 2})',
+      'read src/index.ts · limit: 100 · offset: 2'],
+    ['tools.grep({pattern: "renderCall", limit: 20})', 'grep renderCall · limit: 20'],
+    ['tools.find({pattern: "renderer", limit: 3})', 'find renderer · limit: 3'],
+    ['tools.ls({path: "src", limit: 10})', 'ls src · limit: 10'],
+    ['tools.bash({command: "npm test", timeout: 60})', 'bash npm test · timeout: 60'],
+    ['tools.powershell({command: "Get-ChildItem", timeout: 60})',
+      'powershell Get-ChildItem · timeout: 60'],
+    ['tools.write({content: "large payload", path: "file.txt", mode: "append"})',
+      'write file.txt · mode: "append"'],
+    ['tools.edit({path: "file.txt", oldText: "old", newText: "new", edits: []})',
+      'edit file.txt'],
+    ['tools.skill_search({limit: 1, query: "code-review", extra: true})',
+      'skill_search code-review · extra: true'],
+    ['tools.skill_search({limit: 1})', 'skill_search'],
+  ];
+  for (const [code, expected] of cases) {
+    assert.equal(pseudocode(code!), expected);
+    assert.equal(pseudocode("try {\n" + code), "try {\n" + expected);
+    assert.ok(pseudocode("/* large */".repeat(5000) + "\n" + code).endsWith("\n" + expected));
+  }
+  assert.deepEqual(summarize('tools.skill_search({query: "code-review", limit: 1})').calls,
+    [{ name: "skill_search", line: 0, column: 0 }]);
+});
+
 test("escaped source text cannot create tool metadata", () => {
   const summary = summarize(String.raw`tools.read({path: "\u0000tool0\u0000custom"}); tools.custom({});`);
   assert.deepEqual(summary.calls.map(call => call.name), ["custom"]);
@@ -58,7 +85,7 @@ test("escaped source text cannot create tool metadata", () => {
 
 test("semantic overrides prioritize targets and keep supplied options", () => {
   const cases = [
-    ['tools.skill_search({limit: 1, query: "tdd"})', 'skill_search tdd · limit: 1'],
+    ['tools.skill_search({limit: 1, query: "tdd"})', 'skill_search tdd'],
     ['tools.query_docs({query: "server actions", libraryId: "/vercel/next.js"})',
       'query_docs "/vercel/next.js" · "server actions"'],
     ['tools.todo({status: "completed", id: 3, action: "update"})',
@@ -121,15 +148,68 @@ test("semantic overrides do not infer targets through spreads or duplicate field
   ]) assert.ok(pseudocode(code).includes('query:'));
   assert.equal(pseudocode('tools.todo({id: 3, status: "completed"})'), 'todo #3 · status: "completed"');
   assert.equal(pseudocode('tools.skill_search({query: queryExpression, limit: count})'),
-    'skill_search queryExpression · limit: count');
+    'skill_search queryExpression');
 });
 
 test("semantic string targets omit quotes for single words only", () => {
   assert.equal(pseudocode('tools.skill_search({query: "agents", limit: 1})'),
-    'skill_search agents · limit: 1');
+    'skill_search agents');
   assert.equal(pseudocode('tools.skill_search({query: "code review"})'),
     'skill_search "code review"');
   assert.equal(pseudocode('tools.custom({query: "agents"})'), 'custom query: "agents"');
+});
+
+test("compact summaries hide spinner and proxy fields and redact authentication", () => {
+  const cases = [
+    ['tools.todo({action: "update", id: 3, activeForm: "working", status: "completed"})',
+      'todo update #3 · status: "completed"'],
+    ['tools.web_search({query: "docs", proxy: "https://user:secret@proxy"})', 'web_search docs'],
+    ['tools.source_check({claim: "A claim", proxy: "secret"})', 'source_check "A claim"'],
+    ['tools.fetch_content({url: "https://example.com", proxy: "secret", auth: "token"})',
+      'fetch_content "https://example.com" · auth: [redacted]'],
+    ['tools.fetch_content({url: "https://example.com", auth: true})',
+      'fetch_content "https://example.com" · auth: true'],
+    ['tools.fetch_content({auth: token, ...options})',
+      'fetch_content auth: [redacted] · ...options'],
+    ['tools.fetch_content({auth: "first", auth: "second", proxy: "secret"})',
+      'fetch_content auth: [redacted] · auth: [redacted]'],
+  ];
+  for (const [code, expected] of cases) {
+    for (const prefix of ["", "try {\n", "/* large */".repeat(5000) + "\n"])
+      assert.ok(pseudocode(prefix + code).endsWith(expected!), pseudocode(prefix + code));
+  }
+});
+
+test("graph and resource targets come before options in every summary path", () => {
+  const cases = [
+    ["mcp__gitnexus__query", { limit: 5, repo: "app", search_query: "auth" }, 'auth · limit: 5 · repo: "app"'],
+    ["mcp__gitnexus__context", { repo: "app", uid: "s1" }, 's1 · repo: "app"'],
+    ["mcp__gitnexus__impact", { repo: "app", limit: 5, target: "run", direction: "upstream", mode: "pdg" },
+      'run · direction: "upstream" · mode: "pdg" · …'],
+    ["mcp__gitnexus__rename", { repo: "app", symbol_name: "old", new_name: "next", dry_run: false },
+      'old · next · dry_run: false · …'],
+    ["mcp__gitnexus__trace", { repo: "app", from: "start", to: "end" }, 'start · end · repo: "app"'],
+    ["mcp__gitnexus__cypher", { repo: "app", statement: "MATCH (n) RETURN n" },
+      '"MATCH (n) RETURN n" · repo: "app"'],
+    ["mcp__gitnexus__explain", { limit: 5, target: "run" }, 'run · limit: 5'],
+    ["mcp__gitnexus__pdg_query", { limit: 5, target: "run", mode: "flows" }, 'run · mode: "flows" · limit: 5'],
+    ["mcp__gitnexus__route_map", { repo: "app", route: "/api/users" }, '"/api/users" · repo: "app"'],
+    ["mcp__gitnexus__shape_check", { repo: "app", route: "/api/users" }, '"/api/users" · repo: "app"'],
+    ["mcp__gitnexus__api_impact", { repo: "app", file: "src/api.ts", method: "GET" },
+      '"src/api.ts" · method: "GET" · repo: "app"'],
+    ["read_mcp_resource", { server: "gitnexus", uri: "gitnexus://repo/app" },
+      '"gitnexus://repo/app" · gitnexus'],
+    ["get_search_content", { offset: 20, responseId: "r1", findText: "needle", limit: 100 },
+      'r1 · needle · offset: 20 · …'],
+  ] as const;
+  for (const [name, args, expected] of cases) {
+    const code = "tools." + name + "(" + JSON.stringify(args) + ")";
+    for (const prefix of ["", "try {\n", "/* large */".repeat(5000) + "\n"]) {
+      const summary = summarize(prefix + code);
+      assert.ok(summary.text.endsWith(name + " " + expected), summary.text);
+      assert.deepEqual(summary.calls.map(call => call.name), [name]);
+    }
+  }
 });
 
 test("tool guidance shares its override in complete, incomplete, and large scripts", () => {

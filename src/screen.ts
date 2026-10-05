@@ -739,7 +739,22 @@ export class Screen implements Component {
             return;
           }
         }
-        const parts = wrapTextWithAnsi(command, w);
+        const formatGenericCall = (text: string, lineLimit = 1): string[] => {
+          // Reserve space for the duration so the default stays on one row.
+          const available = Math.max(1, w - (duration ? duration.length + 2 : 0));
+          const wrapped = wrapTextWithAnsi(text, available);
+          const limit = Math.max(1, Math.floor(lineLimit));
+          const shown = wrapped.slice(0, limit);
+          if (wrapped.length > shown.length) {
+            const last = shown.length - 1;
+            shown[last] = truncateToWidth(shown[last]!, Math.max(0, available - 3), "")
+              .replace(/\x1b\[(?:0)?m/g, "") + ".".repeat(Math.min(3, available));
+          }
+          return shown;
+        };
+        const parts = annotation?.defaultTool
+          ? formatGenericCall(command)
+          : wrapTextWithAnsi(command, w);
         parts.forEach((part, i) => {
           if (duration && i === parts.length - 1 && visibleWidth(part) + duration.length + 2 <= w)
             row(part + " ".repeat(w - visibleWidth(part) - duration.length) + fg(timeColor, duration), "toolOutput", true);

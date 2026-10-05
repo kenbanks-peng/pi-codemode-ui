@@ -16,15 +16,52 @@ const displayFields: Record<string, string[]> = {
   mnemosyne_forget: ["id"],
   web_search: ["query", "queries"], source_check: ["claim"],
   fetch_content: ["url", "urls"],
-  get_search_content: ["responseId", "url", "query"],
+  get_search_content: ["responseId", "findText", "url", "query"],
   todo: ["action", "subject", "id"],
   create_goal: ["objective"], get_goal: ["section", "task_id"],
+};
+
+interface DisplayOverride {
+  fields?: string[];
+  hidden?: string[];
+  rawTarget?: boolean;
+  labeled?: string[];
+  redact?: string[];
+}
+const displayOverrides: Record<string, DisplayOverride> = {
+  ...Object.fromEntries(Object.entries(targetFields).map(([name, field]) =>
+    [name, { fields: [field], rawTarget: true }])),
+  edit: { fields: ["path"], rawTarget: true, hidden: ["oldText", "newText", "edits"] },
+  write: { fields: ["path"], rawTarget: true, hidden: ["content"] },
+  skill_search: { fields: ["query"], hidden: ["limit"] },
+  todo: { hidden: ["activeForm"] },
+  web_search: { hidden: ["proxy"] },
+  source_check: { hidden: ["proxy"] },
+  fetch_content: { hidden: ["proxy"], redact: ["auth"] },
+  read_mcp_resource: { fields: ["uri", "server"] },
+  mcp__gitnexus__query: { fields: ["search_query"] },
+  mcp__gitnexus__context: { fields: ["name", "uid"] },
+  mcp__gitnexus__impact: {
+    fields: ["target", "target_uid", "symbol", "name", "direction", "mode"],
+    labeled: ["direction", "mode"],
+  },
+  mcp__gitnexus__explain: { fields: ["target"] },
+  mcp__gitnexus__pdg_query: { fields: ["target", "mode"], labeled: ["mode"] },
+  mcp__gitnexus__rename: {
+    fields: ["symbol_name", "symbol_uid", "new_name", "dry_run"], labeled: ["dry_run"],
+  },
+  mcp__gitnexus__trace: { fields: ["from", "from_uid", "to", "to_uid"] },
+  mcp__gitnexus__cypher: { fields: ["statement"] },
+  mcp__gitnexus__route_map: { fields: ["route"] },
+  mcp__gitnexus__shape_check: { fields: ["route"] },
+  mcp__gitnexus__api_impact: { fields: ["route", "file", "method"], labeled: ["method"] },
 };
 
 type MarkTool = (name: string) => string;
 
 /** Default for every tool without a more useful command-specific layout. */
-function defaultToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
+function defaultToolCall(node: CallExpression, code: string, name: string, mark: MarkTool,
+  override: DisplayOverride = {}): string {
   const clip = (value: string) => value.length > 80 ? value.slice(0, 77) + "…" : value;
   const source = (node: Node) => {
     const range = node as Node & { start: number; end: number };
@@ -42,6 +79,10 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
     if (node.type === "Property" && !node.computed && !node.method && node.kind === "init") {
       const key = node.key.type === "Literal" && typeof node.key.value === "string" &&
         /^[A-Za-z_$][\w$]*$/.test(node.key.value) ? node.key.value : source(node.key);
+      // Non-boolean authentication can contain credentials or refer to them.
+      if (override.redact?.includes(key) &&
+          !(node.value.type === "Literal" && typeof node.value.value === "boolean"))
+        return key + ": [redacted]";
       return node.shorthand ? value(node.value, depth)
         : key + ": " + value(node.value, depth);
     }
@@ -52,6 +93,7 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
       .concat(nodes.length > 3 ? ["…"] : []).join(separator);
   const argument = node.arguments[0];
   let args: string;
+  let rawTarget = false;
   if (node.arguments.length === 1 && argument?.type === "ObjectExpression") {
     const keyOf = (node: Node): string | undefined =>
       node.type === "Property" && !node.computed && !node.method && node.kind === "init"
@@ -61,13 +103,26 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
     // Spreads, computed keys, and duplicates can change the actual target.
     const keys = argument.properties.map(keyOf);
     const safe = keys.every(key => key !== undefined) && new Set(keys).size === keys.length;
-    const preferred = safe && Object.hasOwn(displayFields, name) ? displayFields[name]! : [];
+    const preferred = safe ? override.fields ?? (Object.hasOwn(displayFields, name) ? displayFields[name]! : []) : [];
     const targets = preferred.flatMap(key => argument.properties.filter(p => keyOf(p) === key));
-    const rest = argument.properties.filter(p => !targets.includes(p));
-    const shown = [...targets, ...rest].slice(0, 3);
+    const rest = argument.properties.filter(p => !targets.includes(p) &&
+      !override.hidden?.includes(keyOf(p)!));
+    const visible = [...targets, ...rest];
+    const shown = visible.slice(0, 3);
     args = shown.map(p => {
       if (targets.includes(p) && p.type === "Property") {
         const key = keyOf(p);
+        if (override.labeled?.includes(key!)) return value(p);
+        if (override.rawTarget) {
+          rawTarget = true;
+          const target = p.value;
+          const range = target as Node & { start: number; end: number };
+          return (target.type === "Literal" && typeof target.value === "string"
+            ? target.value
+            : target.type === "TemplateLiteral" && target.expressions.length === 0
+              ? target.quasis.map(part => part.value.cooked ?? part.value.raw).join("")
+              : code.slice(range.start, range.end)).replace(/\s+/g, " ").trim();
+        }
         if (name === "todo" && key === "action" && p.value.type === "Literal" &&
             typeof p.value.value === "string") return p.value.value;
         if (name === "todo" && key === "id") return "#" + value(p.value);
@@ -77,7 +132,7 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
         return value(p.value);
       }
       return value(p);
-    }).concat(argument.properties.length > shown.length ? ["…"] : []).join(" · ");
+    }).concat(visible.length > shown.length ? ["…"] : []).join(" · ");
     if (name === "todo" && targets.length > 1 && keyOf(targets[0]!) === "action") {
       // The action and task target form one command.
       args = args.replace(" · ", " ");
@@ -103,30 +158,13 @@ function defaultToolCall(node: CallExpression, code: string, name: string, mark:
       }
     }
   } else args = items(node.arguments, 0, " · ");
-  return mark(name) + (args ? " " + args : "");
+  return (rawTarget ? name : mark(name)) + (args ? " " + args : "");
 }
 
-/** Small overrides share the same entry point as the default formatter. */
+/** All tool layouts use the default formatter with display-only overrides. */
 function formatToolCall(node: CallExpression, code: string, name: string, mark: MarkTool): string {
-  const argument = node.arguments[0];
-  const key = Object.hasOwn(targetFields, name) ? targetFields[name] : undefined;
-  if (key && node.arguments.length === 1 && argument?.type === "ObjectExpression") {
-    const field = argument.properties.find(p => p.type === "Property" &&
-      !p.computed && !p.method && p.kind === "init" &&
-      ((p.key.type === "Identifier" && p.key.name === key) ||
-       (p.key.type === "Literal" && p.key.value === key)));
-    if (field?.type === "Property") {
-      const value = field.value;
-      const range = value as Node & { start: number; end: number };
-      const target = value.type === "Literal" && typeof value.value === "string"
-        ? value.value
-        : value.type === "TemplateLiteral" && value.expressions.length === 0
-          ? value.quasis.map(part => part.value.cooked ?? part.value.raw).join("")
-          : code.slice(range.start, range.end);
-      return name + " " + target.replace(/\s+/g, " ").trim();
-    }
-  }
-  return defaultToolCall(node, code, name, mark);
+  return defaultToolCall(node, code, name, mark,
+    Object.hasOwn(displayOverrides, name) ? displayOverrides[name] : undefined);
 }
 
 // Codemode globals are meaningful operations, not ordinary result variables.

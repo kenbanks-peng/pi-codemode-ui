@@ -608,7 +608,7 @@ test("unknown tools use compact calls with status and preserve expanded source",
       context({ args: { code }, expanded }),
     ).render(120));
     const compact = render(false);
-    assert.match(compact, /✓ skill_search agents · limit: 1;?\s+12ms/);
+    assert.match(compact, /✓ skill_search agents;?\s+12ms/);
     assert.doesNotMatch(compact, /tools\.skill_search|skill_search\(/);
     assert.equal(compact.split("skill_search").length - 1, 1);
     assert.ok(render(true).includes('text(await tools.skill_search({query: "agents", limit: 1}));'));
