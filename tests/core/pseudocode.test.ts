@@ -2,6 +2,51 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pseudocode, summarize } from "../../src/pseudocode.ts";
 
+test("nested callbacks retain assignments and expand try/catch blocks", () => {
+  const code = 'const calls = [["read", {path: "a.ts"}], ["find", {pattern: "renderer"}]]; ' +
+    'await Promise.all(calls.map(async ([name, args]) => {try {const value = await tools[name](args); ' +
+    'store(name, value); const results = load("results"); results[name] = "called"; text({name, value});}' +
+    'catch (error) {text({name, error: String(error)});}}));';
+  const output = pseudocode(code);
+  assert.match(output, /calls ←/);
+  assert.match(output, /try\n\s+value ← tools\[name\]\(args\)/);
+  assert.match(output, /store\(name, value\)/);
+  assert.match(output, /results ← load\("results"\)/);
+  assert.match(output, /catch error\n/);
+  assert.doesNotMatch(output, /try\{|catch\(/);
+});
+
+test("generic layouts adapt arrays, objects, chains, and operators to width", () => {
+  const code = 'const jobs = [["scan", {path: "src/renderer.ts", limit: 3}], ' +
+    '["check", {pattern: "export", path: "src/model.ts"}]]; ' +
+    'const dir = load("bash").output.trim().split("\\n").pop(); ' +
+    'const accepted = firstCondition && secondCondition;';
+  const narrow = pseudocode(code, 40);
+  const wide = pseudocode(code, 160);
+  assert.match(narrow, /jobs ← \[\n/);
+  assert.match(narrow, /\n\s+\.split\("\\n"\)/);
+  assert.match(narrow, /\n\s+and secondCondition/);
+  assert.match(wide, /load\("bash"\).output.trim\(\).split\("\\n"\).pop\(\)/);
+  assert.ok(narrow.split("\n").length > wide.split("\n").length);
+  assert.doesNotMatch(narrow, /…/);
+});
+
+test("wrapped expressions retain every tool identity and conditional branch", () => {
+  const code = 'const outputs = [tools.alpha({query: "界"}), tools.beta({}), tools.alpha({})]; ' +
+    'const message = ready ? buildSuccess(first, second, third, fourth) : buildFailure(reason); ' +
+    'try {store("value", outputs);} catch {text("failed");} finally {exit();}';
+  for (const width of [30, 80, 160]) {
+    const summary = summarize(code, width);
+    assert.deepEqual(summary.calls.map(call => call.name), ["alpha", "beta", "alpha"]);
+    for (const call of summary.calls)
+      assert.equal(summary.text.split("\n")[call.line]!.slice(call.column,
+        call.column + call.name.length), call.name);
+    assert.match(summary.text, /fourth/);
+    assert.match(summary.text, /finally\n\s+exit\(\)/);
+  }
+  assert.match(pseudocode(code, 30), /\n\s+else buildFailure/);
+});
+
 test("default tool calls keep labels, values, and expressions without call syntax", () => {
   const cases = [
     ['tools.custom({enabled: true, count: 3})', 'custom enabled: true · count: 3'],

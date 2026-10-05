@@ -126,7 +126,7 @@ test("all scripts show uncapped pseudocode, including syntax outside the main co
   assert.doesNotMatch(screen, /Pseudocode/);
   assert.match(screen, /line-11/);
   assert.match(screen, /`hello \$\{name\}`/);
-  assert.doesNotMatch(screen, /message ←/);
+  assert.match(screen, /message ←/);
 });
 
 test("pseudocode fallback keeps all lines for complex, large, and incomplete scripts", () => {

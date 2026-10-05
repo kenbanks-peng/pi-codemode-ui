@@ -97,6 +97,25 @@ for (const name of [
   });
 }
 
+test("compact syntax layouts follow panel width and retain expanded source", () => {
+  const code = 'const accepted = firstCondition && secondCondition; ' +
+    'try {const value = await tools.custom({query: "docs"}); text(value);} ' +
+    'catch (error) {text(String(error));}';
+  const shell = host(code);
+  shell.updateResult(result(["ok"]), false);
+  const narrow = plain(shell, 40);
+  assert.match(narrow, /│   and secondCondition\)/);
+  assert.match(narrow, /catch error/);
+  assert.doesNotMatch(narrow, /try \{/);
+  const wide = plain(shell, 120);
+  assert.match(wide, /accepted ← \(firstCondition and secondCondition\)/);
+  assert.equal(plain(shell, 40), narrow);
+  for (const width of [20, 40, 120])
+    assert.ok(shell.render(width).every(line => visibleWidth(line) <= width));
+  shell.setExpanded(true);
+  assert.ok(plain(shell, 200).includes(code));
+});
+
 test("failure keeps error and output action compact; expansion retains recovery path", () => {
   const shell = host();
   const path = "/tmp/" + "long-directory/".repeat(8) + "complete-output.txt";

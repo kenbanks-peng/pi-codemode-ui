@@ -18,6 +18,18 @@ Use codemode in Pi as usual. The extension formats its results automatically.
 - **Ctrl+O** (Pi's default tool expansion key): show code, call details, and raw output.
 
 
+## Pseudocode layout
+
+Compact view uses parsed JavaScript structure to format nested arrays, objects,
+calls, and callback blocks. It keeps variable assignments and shows
+`try` / `catch` / `finally` on separate lines. Long calls, method chains,
+operators, and conditional expressions wrap at syntax boundaries as the panel
+width changes.
+
+This is a display-only layout. It does not execute or rewrite the script.
+Incomplete, unsupported, and very large scripts use the existing token-based
+fallback. Expanded view keeps the original code.
+
 ## Compact tool calls
 
 Every direct `tools.name(...)` call has a default compact format:

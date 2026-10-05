@@ -77,6 +77,7 @@ function tree(value: unknown): string[] | undefined {
 
 export class Screen implements Component {
   private summary: ToolSummary | undefined;
+  private summaryWidth = -1;
   private buttonRow = -1;
   private buttonWidth = 0;
   private buttonLeft = 2;
@@ -89,9 +90,7 @@ export class Screen implements Component {
     private viewOutput: () => void = () => {},
     private receiving = false,
     private isLatestOutput: () => boolean = () => false,
-  ) {
-    this.summary = expanded ? undefined : summarize(code);
-  }
+  ) {}
   invalidate(): void {} // No styled strings are cached.
   handleMouse(event: TuiMouseEvent) {
     if (event.type === "click" && event.button === "left" &&
@@ -541,13 +540,17 @@ export class Screen implements Component {
     const noCallsMade = this.data.failed && !count &&
       this.data.raw.some((raw) => /^No tool calls were made\.$/m.test(raw));
     if (this.expanded || !noCallsMade) {
+    if (!this.expanded && this.summaryWidth !== w) {
+      this.summary = summarize(this.code, w);
+      this.summaryWidth = w;
+    }
     const summary = this.summary;
     if (this.expanded) heading("Code");
     if (this.expanded) {
       textBody(this.code, true);
     } else {
       // Protect quoted strings and comments; style only primary call names.
-      const formatted = summary ?? summarize(this.code);
+      const formatted = summary ?? summarize(this.code, w);
       let source = safeText(formatted.text);
       const originalLines = formatted.text.split("\n");
       const compactCalls = formatted.calls.map(call => ({

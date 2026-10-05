@@ -1,5 +1,6 @@
 import { parse, tokenizer, type Token } from "acorn";
 import type { CallExpression, Node, Program } from "estree";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 const targetFields: Record<string, string> = {
   read: "path", edit: "path", write: "path", ls: "path",
@@ -299,7 +300,7 @@ function syntaxPseudocode(code: string, mark: MarkTool): string {
 }
 
 /** Reduce parsed syntax to code-like pseudocode. Never execute the script. */
-function renderPseudocode(code: string, mark: MarkTool): string {
+function renderPseudocode(code: string, mark: MarkTool, width: number): string {
   if (!code.trim()) return "// no code";
   if (code.length > 50000) return syntaxPseudocode(code, mark);
   try {
@@ -310,16 +311,19 @@ function renderPseudocode(code: string, mark: MarkTool): string {
       allowReturnOutsideFunction: true,
     }) as unknown as Program;
     let budget = 2000;
-    const describe = (node: Node, depth = 0): string => {
+    const describe = (node: Node, depth = 0, available = width): string => {
       if (--budget < 0 || depth > 24) throw new Error("Summary limit");
-      const child = (value: Node) => describe(value, depth + 1);
-      // Validate omitted items too, so unsupported syntax always uses the fallback.
-      const list = (values: Node[], limit = 3) => {
-        const items = values.map(child);
-        return items
-          .slice(0, limit)
-          .concat(items.length > limit ? ["…"] : [])
-          .join(", ");
+      const child = (value: Node) => describe(value, depth + 1, available);
+      const list = (values: Node[]) => values.map(child).join(", ");
+      // Tool markers carry identity, not display width. Both render passes must
+      // choose the same layout so call positions follow the visible text.
+      const fits = (text: string) => !text.includes("\n") &&
+        visibleWidth(text.replace(/\u0000[^\u0000]*\u0000/g, "")) <=
+          Math.max(12, available - depth * 2);
+      const group = (items: string[], open: string, close: string, force = false) => {
+        const inline = open + items.join(", ") + close;
+        return !items.length || (!force && fits(inline)) ? inline :
+          open + "\n" + indent(items.join(",\n")) + "\n" + close;
       };
       const indent = (text: string) =>
         text
@@ -347,10 +351,6 @@ function renderPseudocode(code: string, mark: MarkTool): string {
         }
         case "ExpressionStatement": {
           const expression = node.expression;
-          if (expression.type === "CallExpression" &&
-              expression.callee.type === "Identifier" &&
-              ["store", "load"].includes(expression.callee.name))
-            return "";
           return child(expression);
         }
         case "AwaitExpression":
@@ -362,7 +362,8 @@ function renderPseudocode(code: string, mark: MarkTool): string {
           return child(node.object) + "." + child(node.property);
         case "CallExpression": {
           if (node.optional) throw new Error("Optional call");
-          const args = list(node.arguments);
+          const argumentText = node.arguments.map(child);
+          const args = argumentText.join(", ");
           if (node.callee.type === "Identifier" && node.callee.name === "text")
             return node.arguments.length === 1 &&
               node.arguments[0]?.type === "Identifier" &&
@@ -380,7 +381,12 @@ function renderPseudocode(code: string, mark: MarkTool): string {
               node.callee.object.type === "Identifier" && node.callee.object.name === "tools" &&
               node.callee.property.type === "Identifier")
             return formatToolCall(node, code, node.callee.property.name, mark);
-          const name = child(node.callee);
+          const member = node.callee.type === "MemberExpression" ? node.callee : undefined;
+          if (member?.optional) throw new Error("Optional member");
+          const object = member ? child(member.object) : undefined;
+          const name = member ? object + (member.computed
+            ? "[" + child(member.property) + "]" : "." + child(member.property))
+            : child(node.callee);
           if (primaryTools.has(name.toLowerCase()))
             return formatToolCall(node, code, name.toLowerCase(), mark);
           if (
@@ -388,31 +394,34 @@ function renderPseudocode(code: string, mark: MarkTool): string {
             node.callee.type === "ArrowFunctionExpression"
           )
             return "(" + name + ")(" + args + ")";
-          return name + "(" + args + ")";
+          // Break fluent calls at member boundaries before wrapping arguments.
+          if (node.callee.type === "MemberExpression" && !node.callee.computed) {
+            const inline = name + "(" + args + ")";
+            if (!fits(inline)) {
+              return object + "\n" + indent("." + child(node.callee.property) +
+                group(argumentText, "(", ")"));
+            }
+          }
+          return group(argumentText, name + "(", ")");
         }
         case "VariableDeclaration":
           return node.declarations.map((declaration) =>
-            node.kind === "const" && declaration.init
-              ? child(declaration.init)
-              : child(declaration),
+            child(declaration),
           ).filter(Boolean).join("\n");
-        case "VariableDeclarator":
+        case "VariableDeclarator": {
+          const binding = child(node.id);
           return node.init
-            ? child(node.id) + " ← " + child(node.init)
-            : "declare " + child(node.id);
-        case "ArrayExpression": {
-          const items = node.elements.map((item) => (item ? child(item) : ""));
-          return (
-            "[" +
-            items
-              .slice(0, 3)
-              .concat(items.length > 3 ? ["…"] : [])
-              .join(", ") +
-            "]"
-          );
+            ? binding + " ← " + describe(node.init, depth + 1,
+                available - visibleWidth(binding + " ← "))
+            : "declare " + binding;
         }
+        case "ArrayExpression":
+          return group(node.elements.map(item => item ? child(item) : ""), "[", "]",
+            node.elements.some(item => item?.type === "ArrayExpression" ||
+              item?.type === "ObjectExpression"));
         case "ObjectExpression":
-          return "{" + list(node.properties, 2) + "}";
+        case "ObjectPattern":
+          return group(node.properties.map(child), "{", "}");
         case "Property":
           if (node.kind !== "init" || node.method || node.computed)
             throw new Error("Complex property");
@@ -433,6 +442,19 @@ function renderPseudocode(code: string, mark: MarkTool): string {
           );
         case "BlockStatement":
           return node.body.map(child).filter(Boolean).join("\n");
+        case "ArrayPattern":
+          return "[" + node.elements.map(item => item ? child(item) : "").join(", ") + "]";
+        case "RestElement":
+        case "SpreadElement":
+          return "..." + child(node.argument);
+        case "TryStatement":
+          return "try\n" + indent(child(node.block)) +
+            (node.handler ? "\n" + child(node.handler) : "") +
+            (node.finalizer ? "\nfinally\n" + indent(child(node.finalizer)) : "") +
+            "\nend try";
+        case "CatchClause":
+          return "catch" + (node.param ? " " + child(node.param) : "") +
+            "\n" + indent(child(node.body));
         case "ReturnStatement":
           return "return" + (node.argument ? " " + child(node.argument) : "");
         case "ThrowStatement":
@@ -483,29 +505,25 @@ function renderPseudocode(code: string, mark: MarkTool): string {
             "||": "or",
             "??": "??",
           };
-          return (
-            "(" +
-            child(node.left) +
-            " " +
-            (operators[node.operator] ?? node.operator) +
-            " " +
-            child(node.right) +
-            ")"
-          );
+          const left = child(node.left);
+          const right = child(node.right);
+          const operator = operators[node.operator] ?? node.operator;
+          const inline = "(" + left + " " + operator + " " + right + ")";
+          return fits(inline) ? inline :
+            "(" + left + "\n" + indent(operator + " " + right) + ")";
         }
-        case "ConditionalExpression":
-          return (
-            "if " +
-            child(node.test) +
-            " then " +
-            child(node.consequent) +
-            " else " +
-            child(node.alternate)
-          );
+        case "ConditionalExpression": {
+          const test = child(node.test);
+          const consequent = child(node.consequent);
+          const alternate = child(node.alternate);
+          const inline = "if " + test + " then " + consequent + " else " + alternate;
+          return fits(inline) ? inline : "if " + test + "\n" +
+            indent("then " + consequent) + "\n" + indent("else " + alternate);
+        }
         case "UnaryExpression":
           if (node.operator === "!") return "not " + child(node.argument);
           if (node.operator === "-") return "-" + child(node.argument);
-          throw new Error("Unsupported unary expression");
+          return node.operator + " " + child(node.argument);
         case "EmptyStatement":
           return "";
         default: {
@@ -531,16 +549,17 @@ export interface ToolSummary {
 }
 
 /** Retain call identity separately from its display text. */
-export function summarize(code: string): ToolSummary {
+export function summarize(code: string, width = 80): ToolSummary {
+  width = Number.isFinite(width) ? Math.max(12, Math.floor(width)) : 80;
   // Check decoded display text too: escaped string literals can introduce NULs.
-  const plain = renderPseudocode(code, name => name);
+  const plain = renderPseudocode(code, name => name, width);
   let marker = "\u0000tool";
   while (code.includes(marker) || plain.includes(marker)) marker += "_";
   const names: string[] = [];
   const marked = renderPseudocode(code, name => {
     names.push(name);
     return marker + (names.length - 1) + "\u0000" + name;
-  });
+  }, width);
   const calls: ToolSummary["calls"] = [];
   let text = "";
   let offset = 0;
@@ -558,6 +577,6 @@ export function summarize(code: string): ToolSummary {
   return { text, calls };
 }
 
-export function pseudocode(code: string): string {
-  return summarize(code).text;
+export function pseudocode(code: string, width = 80): string {
+  return summarize(code, width).text;
 }

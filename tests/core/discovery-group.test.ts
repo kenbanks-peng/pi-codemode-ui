@@ -47,7 +47,7 @@ test("searchTools shows running status without a nested call record", () => {
     data, 'const results = await searchTools("read bash"); text(results);',
     false, true, theme,
   ).render(120).join("\n"));
-  assert.match(screen, /… searchTools read bash/);
+  assert.match(screen, /… results ← searchTools read bash/);
 });
 
 test("searchTools uses recorded success and error states", () => {
