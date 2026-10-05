@@ -1,0 +1,21 @@
+{
+  "name": "truncated",
+  "code": "// @options: {\"max_output_tokens\": 40}\ntext(\"0123456789\".repeat(100));",
+  "updates": [],
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+      },
+      {
+        "type": "text",
+        "text": "Warning: truncated output (original token count: 250)\nTotal output lines: 1\n\n01234567890123456789012345678901234567890123456789012345678901234567890123456789…210 tokens truncated…01234567890123456789012345678901234567890123456789012345678901234567890123456789\n\n[Full output: /var/folders/8x/70__y82n71dbb9q971h35d0h0000gn/T/pi-codemode-55f2bd16fc9ab432.txt (read with offset/limit)]"
+      }
+    ],
+    "details": {
+      "calls": [],
+      "fullOutputPath": "/var/folders/8x/70__y82n71dbb9q971h35d0h0000gn/T/pi-codemode-55f2bd16fc9ab432.txt"
+    }
+  }
+}

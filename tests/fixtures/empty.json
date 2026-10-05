@@ -1,0 +1,16 @@
+{
+  "name": "empty",
+  "code": "const value = 1;",
+  "updates": [],
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+      }
+    ],
+    "details": {
+      "calls": []
+    }
+  }
+}

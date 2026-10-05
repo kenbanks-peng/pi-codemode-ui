@@ -1,0 +1,121 @@
+{
+  "name": "example",
+  "code": "await Promise.all([\n    (async () => text({demo:\"Read package metadata\",result:await tools.read({path:\"package.json\",limit:60})}))(),\n    (async () => text({demo:\"Check Git branch and changes\",result:await tools.bash({command:\"git status --short --branch\",timeout:10})}))()\n  ]);\n  text({demo:\"Find test files\",result:\"tests/core/host.test.ts\\ntests/core/renderer.test.ts\\ntests/formatters/index.test.ts\"});\n  text({demo:\"JavaScript data query\",result:[2,4,6,8].filter(n=>n>4).map(n=>({value:n,squared:n*n}))});",
+  "updates": [
+    {
+      "content": [],
+      "details": {
+        "calls": [
+          {
+            "id": "probe/?",
+            "name": "read",
+            "args": "{\"path\":\"package.json\",\"limit\":60}",
+            "status": "running"
+          }
+        ]
+      }
+    },
+    {
+      "content": [],
+      "details": {
+        "calls": [
+          {
+            "id": "probe/?",
+            "name": "read",
+            "args": "{\"path\":\"package.json\",\"limit\":60}",
+            "status": "running"
+          },
+          {
+            "id": "probe/?",
+            "name": "bash",
+            "args": "{\"command\":\"git status --short --branch\",\"timeout\":10}",
+            "status": "running"
+          }
+        ]
+      }
+    },
+    {
+      "content": [],
+      "details": {
+        "calls": [
+          {
+            "id": "probe/1",
+            "name": "read",
+            "args": "{\"path\":\"package.json\",\"limit\":60}",
+            "status": "ok",
+            "durationMs": 3.752707999999984
+          },
+          {
+            "id": "probe/?",
+            "name": "bash",
+            "args": "{\"command\":\"git status --short --branch\",\"timeout\":10}",
+            "status": "running"
+          }
+        ]
+      }
+    },
+    {
+      "content": [],
+      "details": {
+        "calls": [
+          {
+            "id": "probe/1",
+            "name": "read",
+            "args": "{\"path\":\"package.json\",\"limit\":60}",
+            "status": "ok",
+            "durationMs": 3.752707999999984
+          },
+          {
+            "id": "probe/2",
+            "name": "bash",
+            "args": "{\"command\":\"git status --short --branch\",\"timeout\":10}",
+            "status": "ok",
+            "durationMs": 13.894083000000023
+          }
+        ]
+      }
+    }
+  ],
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+      },
+      {
+        "type": "text",
+        "text": "{\"demo\":\"Read package metadata\",\"result\":\"{\\n  \\\"name\\\": \\\"@kenbanks/pi-ui\\\",\\n  \\\"version\\\": \\\"0.1.0\\\",\\n  \\\"description\\\": \\\"Display-only compact codemode rendering for Pi\\\",\\n  \\\"type\\\": \\\"module\\\",\\n  \\\"keywords\\\": [\\\"pi-package\\\"],\\n  \\\"files\\\": [\\\"src\\\", \\\"dist\\\", \\\"README.md\\\"],\\n  \\\"pi\\\": { \\\"extensions\\\": [\\\"./src/index.ts\\\"] },\\n  \\\"engines\\\": { \\\"node\\\": \\\">=22.19.0\\\" },\\n  \\\"scripts\\\": {\\n    \\\"build\\\": \\\"tsc -p tsconfig.build.json\\\",\\n    \\\"typecheck\\\": \\\"tsc --noEmit\\\",\\n    \\\"test\\\": \\\"node --import tsx --test tests/**/*.test.ts\\\",\\n    \\\"smoke\\\": \\\"node --import tsx scripts/smoke.ts\\\",\\n    \\\"check\\\": \\\"npm run typecheck && npm test && npm run build && npm run smoke\\\"\\n  },\\n  \\\"peerDependencies\\\": {\\n    \\\"@earendil-works/pi-coding-agent\\\": \\\"*\\\",\\n    \\\"@earendil-works/pi-tui\\\": \\\"*\\\"\\n  },\\n  \\\"devDependencies\\\": {\\n    \\\"@earendil-works/pi-coding-agent\\\": \\\"1.0.2\\\",\\n    \\\"@earendil-works/pi-tui\\\": \\\"1.0.2\\\",\\n    \\\"@types/node\\\": \\\"^22.19.0\\\",\\n    \\\"tsx\\\": \\\"^4.20.0\\\",\\n    \\\"typescript\\\": \\\"^5.9.0\\\"\\n  }\\n}\\n\"}"
+      },
+      {
+        "type": "text",
+        "text": "{\"demo\":\"Check Git branch and changes\",\"result\":{\"output\":\"## main\\n D PLAN.md\\n?? example1.md\\n?? output1.md\\n?? scripts/capture-codemode.ts\\n\",\"truncated\":false,\"exit_code\":0,\"wall_time_seconds\":0}}"
+      },
+      {
+        "type": "text",
+        "text": "{\"demo\":\"Find test files\",\"result\":\"tests/core/host.test.ts\\ntests/core/renderer.test.ts\\ntests/formatters/index.test.ts\"}"
+      },
+      {
+        "type": "text",
+        "text": "{\"demo\":\"JavaScript data query\",\"result\":[{\"value\":6,\"squared\":36},{\"value\":8,\"squared\":64}]}"
+      }
+    ],
+    "details": {
+      "calls": [
+        {
+          "id": "probe/1",
+          "name": "read",
+          "args": "{\"path\":\"package.json\",\"limit\":60}",
+          "status": "ok",
+          "durationMs": 3.752707999999984
+        },
+        {
+          "id": "probe/2",
+          "name": "bash",
+          "args": "{\"command\":\"git status --short --branch\",\"timeout\":10}",
+          "status": "ok",
+          "durationMs": 13.894083000000023
+        }
+      ]
+    }
+  }
+}

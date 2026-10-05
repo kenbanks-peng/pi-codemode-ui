@@ -1,0 +1,25 @@
+{
+  "name": "failure",
+  "code": "text(\"kept before failure\"); throw new Error(\"research failure\");",
+  "updates": [],
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Script failed\nWall time 0.1 seconds\nOutput:\n"
+      },
+      {
+        "type": "text",
+        "text": "kept before failure"
+      },
+      {
+        "type": "text",
+        "text": "Script error:\nError: research failure\n    at <anonymous> (codemode.js:1:68)\n\nNo tool calls were made."
+      }
+    ],
+    "details": {
+      "calls": []
+    },
+    "isError": true
+  }
+}

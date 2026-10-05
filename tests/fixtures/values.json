@@ -1,0 +1,32 @@
+{
+  "name": "values",
+  "code": "text(\"plain text\"); text({name:\"sample\",count:2}); console.log(\"two\", {items:[1,2]}); return [{name:\"a\",count:1},{name:\"b\",count:2}];",
+  "updates": [],
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+      },
+      {
+        "type": "text",
+        "text": "plain text"
+      },
+      {
+        "type": "text",
+        "text": "{\"name\":\"sample\",\"count\":2}"
+      },
+      {
+        "type": "text",
+        "text": "two {\"items\":[1,2]}"
+      },
+      {
+        "type": "text",
+        "text": "[{\"name\":\"a\",\"count\":1},{\"name\":\"b\",\"count\":2}]"
+      }
+    ],
+    "details": {
+      "calls": []
+    }
+  }
+}
