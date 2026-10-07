@@ -32,7 +32,7 @@ export function createToolShell(code = "text(value);", options: ShellOptions = {
 }
 
 /** Exercise extension registration, rather than bypassing it in renderer tests. */
-export function registeredRenderers(): ToolRenderers {
+export function registeredRenderers(name = "codemode"): ToolRenderers {
   let resolver: ToolRendererResolver | undefined;
   extension({
     on() {
@@ -44,7 +44,7 @@ export function registeredRenderers(): ToolRenderers {
     },
   } as unknown as ExtensionAPI);
   assert.ok(resolver);
-  const renderers = resolver("codemode", () => undefined);
+  const renderers = resolver(name, () => undefined);
   assert.ok(renderers);
   return renderers;
 }

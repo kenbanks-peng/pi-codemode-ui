@@ -1,7 +1,7 @@
 {
   "name": "@npm-ken/pi-codemode-ui",
-  "version": "0.4.0",
-  "description": "Display-only compact codemode rendering for Pi",
+  "version": "0.5.0",
+  "description": "Display-only compact codemode and tool_search rendering for Pi",
   "type": "module",
   "keywords": [
     "pi-package"

@@ -3,12 +3,13 @@ import type { OutputController } from "../output/controller.ts";
 import { parseRunResult } from "../run/parse-result.ts";
 import { asString, isRecord } from "../run/value.ts";
 import { RunPanel } from "./run-panel.ts";
+import { searchPresentation } from "./search-presentation.ts";
 
-export function createCodemodeRenderers(output?: OutputController): ToolRenderers {
+function createPanelRenderers(output?: OutputController, search = false): ToolRenderers {
   return {
     // Own the border spacing; Pi still owns message separation and images.
     renderShell: "self",
-    renderCall: (_args, theme, context) => ({
+    renderCall: (args, theme, context) => ({
       render: (width) =>
         context.isPartial && !context.state.hasResult
           ? new RunPanel(
@@ -18,7 +19,9 @@ export function createCodemodeRenderers(output?: OutputController): ToolRenderer
               true,
               theme,
               undefined,
-              true,
+              !search || !context.argsComplete,
+              undefined,
+              search ? searchPresentation(args) : undefined,
             )
               .render(width)
               .map((line) => theme.bg("toolPendingBg", line))
@@ -40,6 +43,7 @@ export function createCodemodeRenderers(output?: OutputController): ToolRenderer
         },
         false,
         () => output?.isLatest(context.toolCallId) ?? false,
+        search ? searchPresentation(context.args, result, data) : undefined,
       );
       const background = options.isPartial
         ? "toolPendingBg"
@@ -53,6 +57,14 @@ export function createCodemodeRenderers(output?: OutputController): ToolRenderer
       };
     },
   };
+}
+
+export function createCodemodeRenderers(output?: OutputController): ToolRenderers {
+  return createPanelRenderers(output);
+}
+
+export function createToolSearchRenderers(output?: OutputController): ToolRenderers {
+  return createPanelRenderers(output, true);
 }
 
 export const codemodeRenderers = createCodemodeRenderers();

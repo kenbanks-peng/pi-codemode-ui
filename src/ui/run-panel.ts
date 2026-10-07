@@ -15,6 +15,12 @@ import { safeText } from "../terminal/safe-text.ts";
 import { callAppearance, formatDuration } from "./call-appearance.ts";
 import { renderCompactCode } from "./compact-code.ts";
 
+export interface PanelPresentation {
+  title: string;
+  receivingText: string;
+  content?: { compact: string[]; expanded: string[] };
+}
+
 export class RunPanel implements Component {
   private summary: ToolSummary | undefined;
   private summaryWidth = -1;
@@ -30,6 +36,7 @@ export class RunPanel implements Component {
     private viewOutput: () => void = () => {},
     private receiving = false,
     private isLatestOutput: () => boolean = () => false,
+    private presentation?: PanelPresentation,
   ) {}
   invalidate(): void {} // No styled strings are cached.
   handleMouse(event: TuiMouseEvent) {
@@ -49,7 +56,9 @@ export class RunPanel implements Component {
     this.buttonRow = -1;
     width = Math.max(0, Math.floor(width));
     if (!width) return [];
-    if (width < 11) return [truncateToWidth("CODEMODE", width, "")];
+    const title = this.presentation?.title ?? "CODEMODE";
+    if (width < Math.max(11, visibleWidth(title) + 4))
+      return [truncateToWidth(title, width, "")];
     const w = width - 4;
     const lines: string[] = [];
     const fg = (token: ThemeColor, s: string) => this.theme.fg(token, s);
@@ -148,7 +157,6 @@ export class RunPanel implements Component {
         ? "<50ms"
         : formatDuration(Number(this.data.elapsed) * 1000)
       : "";
-    const title = "CODEMODE";
     if (visibleWidth(title) + visibleWidth(stats) + 8 <= width) {
       const left = "╭─ " + title + " ";
       const right = stats ? " " + stats + " ╮" : "╮";
@@ -168,7 +176,7 @@ export class RunPanel implements Component {
     }
     row(); // Top padding inside the panel.
     if (this.receiving) {
-      row("Receiving script…", "muted");
+      row(this.presentation?.receivingText ?? "Receiving script…", "muted");
       row();
       lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
       return lines;
@@ -200,7 +208,20 @@ export class RunPanel implements Component {
       this.data.failed &&
       !count &&
       this.data.raw.some((raw) => /^No tool calls were made\.$/m.test(raw));
-    if (this.expanded || !noCallsMade) {
+    if (this.presentation?.content) {
+      if (this.expanded) heading("Arguments");
+      for (const text of this.expanded
+        ? this.presentation.content.expanded
+        : this.presentation.content.compact) textBody(text, this.expanded);
+      if (this.expanded) {
+        heading("Raw output");
+        this.data.raw.forEach((raw, i) => {
+          if (i) row();
+          textBody(raw, true);
+        });
+        if (!this.data.raw.length) row("No text output", "muted");
+      }
+    } else if (this.expanded || !noCallsMade) {
       if (!this.expanded && this.summaryWidth !== w) {
         this.summary = summarize(this.code, w);
         this.summaryWidth = w;

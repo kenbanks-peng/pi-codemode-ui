@@ -24,7 +24,7 @@ export class OutputController {
     if (!context?.hasUI || context.mode !== "tui" || this.viewing) return;
     const data = id ? this.results.get(id) : [...this.results.values()].at(-1);
     if (!data) {
-      context.ui.notify("No codemode output available", "info");
+      context.ui.notify("No codemode or tool_search output available", "info");
       return;
     }
     this.viewing = true;

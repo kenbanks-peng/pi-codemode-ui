@@ -4,6 +4,7 @@ import {
   type ExtensionContext,
   type Theme,
   type ToolRendererResolver,
+  ToolExecutionComponent,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, type TUI } from "@earendil-works/pi-tui";
 import assert from "node:assert/strict";
@@ -58,7 +59,15 @@ test("real host button opens its own run; shortcut opens latest run without chan
     return component;
   };
   const first = shell("first", "first output");
-  shell("second", "second output");
+  const search = new ToolExecutionComponent(
+    "tool_search", "second", { query: "search output" }, { showImages: false },
+    resolver("tool_search", () => undefined), { requestRender() {} } as TUI, process.cwd(),
+  );
+  search.updateResult({
+    content: [{ type: "text", text: "second search output" }],
+    details: { loaded: [] },
+    isError: false,
+  }, false);
   const before = plain(first);
   const lines = first.render(80);
   const y = lines.findIndex((line) => stripVTControlCharacters(line).includes("output"));
@@ -86,6 +95,7 @@ test("real host button opens its own run; shortcut opens latest run without chan
   assert.match(opened, /first output/);
   assert.equal(plain(first), before);
   await shortcut(ctx);
-  assert.match(opened, /second output/);
+  assert.match(opened, /second search output/);
+  assert.match(plain(search), /ctrl\+alt\+o output/);
   assert.doesNotMatch(before, /first output/);
 });
